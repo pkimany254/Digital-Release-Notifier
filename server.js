@@ -55,6 +55,16 @@ db.exec(`
   )
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS simkl_movie_notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    simkl_id INTEGER NOT NULL UNIQUE,
+    tmdb_id INTEGER,
+    title TEXT NOT NULL,
+    notified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
 /* =========================================================
    TMDB DIGITAL RELEASE CHECKER
 ========================================================= */
@@ -191,6 +201,178 @@ async function sendTelegramNotification(message) {
 
   return response.json();
 }
+
+/* =========================================================
+   CHECK SIMKL MOVIE WATCHLIST
+========================================================= */
+
+async function checkSimklMovieWatchlist() {
+
+  const data =
+    await getSimklItems(
+      "movies",
+      "plantowatch"
+    );
+
+  const movies =
+    data.movies || [];
+
+  console.log(
+    `Checking ${movies.length} Simkl movie(s)...`
+  );
+
+  let checked = 0;
+  let released = 0;
+  let skipped = 0;
+
+  for (const item of movies) {
+
+    const movie =
+      item.movie;
+
+    if (!movie) {
+      skipped++;
+      continue;
+    }
+
+    const tmdbId =
+      movie.ids?.tmdb;
+
+    if (!tmdbId) {
+
+      console.log(
+        `No TMDB ID for: ${movie.title}`
+      );
+
+      skipped++;
+      continue;
+    }
+
+    try {
+
+      checked++;
+
+      const result =
+        await checkDigitalRelease(
+          Number(tmdbId)
+        );
+
+      if (!result.available) {
+
+        console.log(
+          `No digital release: ${movie.title}`
+        );
+
+        continue;
+      }
+
+      released++;
+
+      console.log(
+        `Digital release found: ${movie.title}`
+      );
+
+      /*
+       * Check whether we have already
+       * notified this movie.
+       */
+
+      const existing =
+        db.prepare(`
+          SELECT *
+          FROM simkl_movie_notifications
+          WHERE simkl_id = ?
+        `).get(
+          movie.ids?.simkl
+        );
+
+      if (existing) {
+
+        console.log(
+          `Already notified: ${movie.title}`
+        );
+
+        continue;
+      }
+
+      const message =
+        `🔔 Digital Release Available\n\n` +
+        `${movie.title}` +
+        (
+          movie.year
+            ? ` (${movie.year})`
+            : ""
+        ) +
+        `\n\n` +
+        `A digital release is now available.` +
+        (
+          result.release_date
+            ? `\nRelease date: ${result.release_date}`
+            : ""
+        );
+
+      await sendTelegramNotification(
+        message
+      );
+
+      db.prepare(`
+        INSERT INTO simkl_movie_notifications (
+          simkl_id,
+          tmdb_id,
+          title
+        )
+        VALUES (?, ?, ?)
+      `).run(
+        movie.ids?.simkl,
+        Number(tmdbId),
+        movie.title
+      );
+
+    } catch (error) {
+
+      console.error(
+        `Failed checking ${movie.title}:`,
+        error.message
+      );
+    }
+  }
+
+  return {
+    total: movies.length,
+    checked,
+    released,
+    skipped
+  };
+}
+
+app.post(
+  "/simkl/check-movies",
+  async (req, res) => {
+
+    try {
+
+      const result =
+        await checkSimklMovieWatchlist();
+
+      res.json({
+        success: true,
+        ...result
+      });
+
+    } catch (error) {
+
+      console.error(
+        "Simkl movie check error:",
+        error
+      );
+
+      res.status(500).json({
+        error:
+          error.message
+      });
+    }
+  }
+);
 
 /* =========================================================
    CHECK WATCHLIST
@@ -373,75 +555,6 @@ app.get(
     } catch (error) {
 
       console.error(error);
-
-      res.status(500).json({
-        error:
-          error.message
-      });
-    }
-  }
-);
-
-app.get(
-  "/simkl/test-movie-release",
-  async (req, res) => {
-
-    try {
-
-      const tmdbId = 157336;
-      const title = "Interstellar";
-
-      const result =
-        await checkDigitalRelease(
-          tmdbId
-        );
-
-      if (!result.available) {
-
-        return res.json({
-          success: true,
-          title,
-          tmdb_id: tmdbId,
-          digital_release: false,
-          message:
-            "No digital release detected."
-        });
-      }
-
-      const message =
-        `🔔 Digital Release Available\n\n` +
-        `${title}\n\n` +
-        `TMDB detected a digital release.` +
-        (
-          result.country
-            ? `\nCountry: ${result.country}`
-            : ""
-        ) +
-        (
-          result.release_date
-            ? `\nRelease date: ${result.release_date}`
-            : ""
-        );
-
-      await sendTelegramNotification(
-        message
-      );
-
-      res.json({
-        success: true,
-        title,
-        tmdb_id: tmdbId,
-        digital_release: true,
-        notification_sent: true,
-        release: result
-      });
-
-    } catch (error) {
-
-      console.error(
-        "Movie release test error:",
-        error
-      );
 
       res.status(500).json({
         error:
