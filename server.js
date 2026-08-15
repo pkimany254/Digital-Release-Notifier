@@ -497,6 +497,46 @@ app.get(
 );
 
 /* =========================================================
+   SIMKL CONTINUE WATCHING / WATCHING
+========================================================= */
+
+app.get(
+  "/simkl/continue-watching",
+  async (req, res) => {
+
+    try {
+
+      const data =
+        await getSimklItems(
+          "tv",
+          "watching"
+        );
+
+      const shows =
+        data.shows || [];
+
+      res.json({
+        success: true,
+        count: shows.length,
+        items: shows
+      });
+
+    } catch (error) {
+
+      console.error(
+        "Simkl continue watching error:",
+        error
+      );
+
+      res.status(500).json({
+        error:
+          error.message
+      });
+    }
+  }
+);
+
+/* =========================================================
    SIMKL OAUTH
 ========================================================= */
 
