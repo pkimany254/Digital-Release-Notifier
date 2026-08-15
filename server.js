@@ -344,13 +344,14 @@ app.get("/simkl/watchlist", async (req, res) => {
       });
     }
 
-    res.json({
-      success: true,
-      count: Array.isArray(data)
-        ? data.length
-        : 0,
-      items: data
-    });
+   const movies =
+  data.movies || [];
+
+res.json({
+  success: true,
+  count: movies.length,
+  items: movies
+});
 
   } catch (error) {
 
