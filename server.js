@@ -621,6 +621,103 @@ app.get(
   }
 );
 
+async function checkSimklShowWatchlist() {
+
+  const data =
+    await getSimklItems(
+      "tv",
+      "plantowatch"
+    );
+
+  const shows =
+    data.shows || [];
+
+  console.log(
+    `Checking ${shows.length} Simkl show(s)...`
+  );
+
+  let checked = 0;
+  let available = 0;
+  let notified = 0;
+  let skipped = 0;
+
+  for (const item of shows) {
+
+    try {
+
+      if (!item.show) {
+        skipped++;
+        continue;
+      }
+
+      checked++;
+
+      const result =
+        await checkSimklShowEpisode(
+          item
+        );
+
+      if (result.available) {
+        available++;
+      }
+
+      if (result.notified) {
+        notified++;
+      }
+
+      console.log(
+        `${item.show.title}:`,
+        result
+      );
+
+    } catch (error) {
+
+      skipped++;
+
+      console.error(
+        `Failed checking ${item.show?.title || "unknown show"}:`,
+        error.message
+      );
+    }
+  }
+
+  return {
+    total: shows.length,
+    checked,
+    available,
+    notified,
+    skipped
+  };
+}
+
+app.get(
+  "/simkl/check-shows",
+  async (req, res) => {
+
+    try {
+
+      const result =
+        await checkSimklShowWatchlist();
+
+      res.json({
+        success: true,
+        ...result
+      });
+
+    } catch (error) {
+
+      console.error(
+        "Simkl show check error:",
+        error
+      );
+
+      res.status(500).json({
+        error: error.message
+      });
+    }
+  }
+);
+
 /* =========================================================
    CHECK WATCHLIST
 ========================================================= */
