@@ -631,6 +631,71 @@ app.get(
   }
 );
 
+app.get(
+  "/simkl/test-show-release",
+  async (req, res) => {
+
+    try {
+
+      const tmdbId = 108978;
+      const seasonNumber = 4;
+      const title = "Reacher";
+
+      const url =
+        `https://api.themoviedb.org/3/tv/${tmdbId}/season/${seasonNumber}?api_key=${TMDB_API_KEY}`;
+
+      const response =
+        await fetch(url);
+
+      if (!response.ok) {
+        throw new Error(
+          `TMDB request failed: ${response.status}`
+        );
+      }
+
+      const data =
+        await response.json();
+
+      const episodes =
+        data.episodes || [];
+
+      const releasedEpisodes =
+        episodes.filter(
+          episode =>
+            episode.air_date &&
+            new Date(episode.air_date) <= new Date()
+        );
+
+      res.json({
+        success: true,
+        title,
+        tmdb_id: tmdbId,
+        season: seasonNumber,
+        total_episodes: episodes.length,
+        released_episodes: releasedEpisodes.length,
+        episodes: releasedEpisodes.map(
+          episode => ({
+            episode: episode.episode_number,
+            name: episode.name,
+            air_date: episode.air_date
+          })
+        )
+      });
+
+    } catch (error) {
+
+      console.error(
+        "Show release test error:",
+        error
+      );
+
+      res.status(500).json({
+        error: error.message
+      });
+    }
+  }
+);
+
 /* =========================================================
    SIMKL OAUTH
 ========================================================= */
