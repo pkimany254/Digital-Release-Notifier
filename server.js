@@ -65,6 +65,19 @@ db.exec(`
   )
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS simkl_episode_notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    simkl_id INTEGER NOT NULL,
+    tmdb_id INTEGER NOT NULL,
+    season INTEGER NOT NULL,
+    episode INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    notified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(simkl_id, season, episode)
+  )
+`);
+
 /* =========================================================
    TMDB DIGITAL RELEASE CHECKER
 ========================================================= */
@@ -398,6 +411,211 @@ app.get(
       res.status(500).json({
         error:
           error.message
+      });
+    }
+  }
+);
+
+async function checkSimklShowEpisode(
+  simklShow
+) {
+
+  const show =
+    simklShow.show;
+
+  const simklId =
+    show.ids?.simkl;
+
+  const tmdbId =
+    show.ids?.tmdb;
+
+  const nextToWatch =
+    simklShow.next_to_watch;
+
+  if (
+    !simklId ||
+    !tmdbId ||
+    !nextToWatch
+  ) {
+    return {
+      title: show.title,
+      available: false,
+      reason: "Missing show IDs or next episode"
+    };
+  }
+
+  const match =
+    nextToWatch.match(
+      /^S(\d+)E(\d+)$/
+    );
+
+  if (!match) {
+    return {
+      title: show.title,
+      available: false,
+      reason: "Invalid next_to_watch format"
+    };
+  }
+
+  const season =
+    Number(match[1]);
+
+  const episode =
+    Number(match[2]);
+
+  const url =
+    `https://api.themoviedb.org/3/tv/${tmdbId}/season/${season}?api_key=${TMDB_API_KEY}`;
+
+  const response =
+    await fetch(url);
+
+  if (!response.ok) {
+    throw new Error(
+      `TMDB request failed: ${response.status}`
+    );
+  }
+
+  const data =
+    await response.json();
+
+  const tmdbEpisode =
+    (data.episodes || []).find(
+      ep =>
+        ep.episode_number === episode
+    );
+
+  if (!tmdbEpisode) {
+    return {
+      title: show.title,
+      available: false,
+      reason: "Episode not found on TMDB"
+    };
+  }
+
+  const released =
+    tmdbEpisode.air_date &&
+    new Date(tmdbEpisode.air_date) <= new Date();
+
+  if (!released) {
+    return {
+      title: show.title,
+      available: false,
+      episode:
+        `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`
+    };
+  }
+
+  const existing =
+    db.prepare(`
+      SELECT *
+      FROM simkl_episode_notifications
+      WHERE simkl_id = ?
+        AND season = ?
+        AND episode = ?
+    `).get(
+      simklId,
+      season,
+      episode
+    );
+
+  if (existing) {
+    return {
+      title: show.title,
+      available: true,
+      already_notified: true,
+      episode:
+        `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`
+    };
+  }
+
+  const episodeCode =
+    `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`;
+
+  const message =
+    `🔔 New Episode Available\n\n` +
+    `${show.title}\n` +
+    `${episodeCode} — ${tmdbEpisode.name}\n\n` +
+    `Release date: ${tmdbEpisode.air_date}`;
+
+  await sendTelegramNotification(
+    message
+  );
+
+  db.prepare(`
+    INSERT INTO simkl_episode_notifications (
+      simkl_id,
+      tmdb_id,
+      season,
+      episode,
+      title
+    )
+    VALUES (?, ?, ?, ?, ?)
+  `).run(
+    simklId,
+    Number(tmdbId),
+    season,
+    episode,
+    show.title
+  );
+
+  return {
+    title: show.title,
+    available: true,
+    notified: true,
+    episode: episodeCode,
+    name: tmdbEpisode.name,
+    air_date: tmdbEpisode.air_date
+  };
+}
+
+app.get(
+  "/simkl/test-reacher-episode",
+  async (req, res) => {
+
+    try {
+
+      const data =
+        await getSimklItems(
+          "tv",
+          "plantowatch"
+        );
+
+      const shows =
+        data.shows || [];
+
+      const reacher =
+        shows.find(
+          item =>
+            item.show?.ids?.tmdb === "108978" ||
+            Number(item.show?.ids?.tmdb) === 108978
+        );
+
+      if (!reacher) {
+        return res.status(404).json({
+          error:
+            "Reacher was not found in your Simkl Watchlist"
+        });
+      }
+
+      const result =
+        await checkSimklShowEpisode(
+          reacher
+        );
+
+      res.json({
+        success: true,
+        result
+      });
+
+    } catch (error) {
+
+      console.error(
+        "Reacher episode test error:",
+        error
+      );
+
+      res.status(500).json({
+        error: error.message
       });
     }
   }
