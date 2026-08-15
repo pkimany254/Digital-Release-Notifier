@@ -7,6 +7,12 @@ const PORT = process.env.PORT || 3000;
 const TMDB_API_KEY =
   process.env.TMDB_API_KEY;
 
+const TELEGRAM_BOT_TOKEN =
+  process.env.TELEGRAM_BOT_TOKEN;
+
+const TELEGRAM_CHAT_ID =
+  process.env.TELEGRAM_CHAT_ID;
+
 if (!TMDB_API_KEY) {
   console.warn(
     "WARNING: TMDB_API_KEY is not configured"
@@ -34,6 +40,240 @@ db.exec(`
     notified INTEGER NOT NULL DEFAULT 0
   )
 `);
+
+ /* =========================================================
+    TMDB DIGITAL RELEASE CHECKER
+ ========================================================= */
+
+async function checkDigitalRelease(tmdbId) {
+  if (!TMDB_API_KEY) {
+    throw new Error(
+      "TMDB_API_KEY is not configured"
+    );
+  }
+
+  const url =
+    `https://api.themoviedb.org/3/movie/${tmdbId}/release_dates?api_key=${TMDB_API_KEY}`;
+
+  const response =
+    await fetch(url);
+
+  if (!response.ok) {
+    throw new Error(
+      `TMDB request failed: ${response.status}`
+    );
+  }
+
+  const data =
+    await response.json();
+
+  const results =
+    data.results || [];
+
+  /*
+   * Look through all countries.
+   * TMDB release type 4 = Digital.
+   */
+  for (const country of results) {
+
+    const releases =
+      country.release_dates || [];
+
+    const digital =
+      releases.find(
+        release =>
+          release.type === 4
+      );
+
+    if (digital) {
+      return {
+        available: true,
+        country: country.iso_3166_1,
+        release_date:
+          digital.release_date || null
+      };
+    }
+  }
+
+  return {
+    available: false
+  };
+}
+
+app.get(
+  "/check/:tmdbId",
+  async (req, res) => {
+
+    const tmdbId =
+      Number(req.params.tmdbId);
+
+    if (!Number.isInteger(tmdbId)) {
+      return res.status(400).json({
+        error: "Invalid TMDB ID"
+      });
+    }
+
+    try {
+
+      const result =
+        await checkDigitalRelease(
+          tmdbId
+        );
+
+      res.json({
+        tmdb_id: tmdbId,
+        ...result
+      });
+
+    } catch (error) {
+
+      console.error(error);
+
+      res.status(500).json({
+        error:
+          "Failed to check TMDB release"
+      });
+    }
+  }
+);
+
+/* =========================================================
+   TELEGRAM NOTIFICATION
+========================================================= */
+
+async function sendTelegramNotification(message) {
+  if (
+    !TELEGRAM_BOT_TOKEN ||
+    !TELEGRAM_CHAT_ID
+  ) {
+    throw new Error(
+      "Telegram configuration is missing"
+    );
+  }
+
+  const url =
+    `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      chat_id: TELEGRAM_CHAT_ID,
+      text: message
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `Telegram request failed: ${response.status}`
+    );
+  }
+
+  return response.json();
+}
+
+
+/* =========================================================
+   CHECK WATCHLIST
+========================================================= */
+
+async function checkWatchlist() {
+  const movies = db.prepare(`
+    SELECT *
+    FROM watchlist
+    WHERE digital_available = 0
+  `).all();
+
+  console.log(
+    `Checking ${movies.length} watchlist item(s)...`
+  );
+
+  for (const movie of movies) {
+
+    try {
+
+      const result =
+        await checkDigitalRelease(
+          movie.tmdb_id
+        );
+
+      if (result.available) {
+
+  const message =
+    `🔔 Digital Release Available\n\n` +
+    `${movie.title}\n\n` +
+    `Digital release detected by TMDB.` +
+    (
+      result.country
+        ? `\nCountry: ${result.country}`
+        : ""
+    ) +
+    (
+      result.release_date
+        ? `\nRelease date: ${result.release_date}`
+        : ""
+    );
+
+  await sendTelegramNotification(
+    message
+  );
+
+  db.prepare(`
+    UPDATE watchlist
+    SET
+      digital_available = 1,
+      notified = 1
+    WHERE tmdb_id = ?
+  `).run(movie.tmdb_id);
+
+  console.log(
+    `Digital release found and notification sent: ${movie.title}`
+  );
+
+      } else {
+
+        console.log(
+          `No digital release yet: ${movie.title}`
+        );
+      }
+
+    } catch (error) {
+
+      console.error(
+        `Failed checking ${movie.title}:`,
+        error.message
+      );
+    }
+  }
+}
+
+app.post(
+  "/check-watchlist",
+  async (req, res) => {
+
+    try {
+
+      await checkWatchlist();
+
+      res.json({
+        success: true,
+        message:
+          "Watchlist check completed"
+      });
+
+    } catch (error) {
+
+      console.error(error);
+
+      res.status(500).json({
+        error:
+          "Watchlist check failed"
+      });
+    }
+  }
+);
 
 
 /* =========================================================
