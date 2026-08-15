@@ -886,6 +886,39 @@ app.delete(
 );
 
 /* =========================================================
+   AUTOMATIC SIMKL MOVIE CHECK
+========================================================= */
+
+setInterval(
+  async () => {
+
+    try {
+
+      console.log(
+        "Running automatic Simkl movie check..."
+      );
+
+      const result =
+        await checkSimklMovieWatchlist();
+
+      console.log(
+        "Automatic movie check completed:",
+        result
+      );
+
+    } catch (error) {
+
+      console.error(
+        "Automatic Simkl movie check failed:",
+        error
+      );
+    }
+
+  },
+  6 * 60 * 60 * 1000
+);
+
+/* =========================================================
    START SERVER
 ========================================================= */
 
