@@ -294,7 +294,7 @@ app.post(
 );
 
 /* =========================================================
-   SIMKL WATCHLIST + FAVORITES
+   SIMKL WATCHLIST
 ========================================================= */
 
 async function getSimklItems(type, status) {
@@ -382,6 +382,75 @@ app.get(
   }
 );
 
+app.get(
+  "/simkl/test-movie-release",
+  async (req, res) => {
+
+    try {
+
+      const tmdbId = 157336;
+      const title = "Interstellar";
+
+      const result =
+        await checkDigitalRelease(
+          tmdbId
+        );
+
+      if (!result.available) {
+
+        return res.json({
+          success: true,
+          title,
+          tmdb_id: tmdbId,
+          digital_release: false,
+          message:
+            "No digital release detected."
+        });
+      }
+
+      const message =
+        `🔔 Digital Release Available\n\n` +
+        `${title}\n\n` +
+        `TMDB detected a digital release.` +
+        (
+          result.country
+            ? `\nCountry: ${result.country}`
+            : ""
+        ) +
+        (
+          result.release_date
+            ? `\nRelease date: ${result.release_date}`
+            : ""
+        );
+
+      await sendTelegramNotification(
+        message
+      );
+
+      res.json({
+        success: true,
+        title,
+        tmdb_id: tmdbId,
+        digital_release: true,
+        notification_sent: true,
+        release: result
+      });
+
+    } catch (error) {
+
+      console.error(
+        "Movie release test error:",
+        error
+      );
+
+      res.status(500).json({
+        error:
+          error.message
+      });
+    }
+  }
+);
+
 
 /* =========================================================
    TV WATCHLIST
@@ -401,82 +470,6 @@ app.get(
 
       const shows =
   data.shows || [];
-
-      res.json({
-        success: true,
-        count: shows.length,
-        items: shows
-      });
-
-    } catch (error) {
-
-      console.error(error);
-
-      res.status(500).json({
-        error:
-          error.message
-      });
-    }
-  }
-);
-
-
-/* =========================================================
-   MOVIE FAVORITES
-========================================================= */
-
-app.get(
-  "/simkl/favorites/movies",
-  async (req, res) => {
-
-    try {
-
-      const data =
-        await getSimklItems(
-          "movies",
-          "favorites"
-        );
-
-      const movies =
-        data.movies || [];
-
-      res.json({
-        success: true,
-        count: movies.length,
-        items: movies
-      });
-
-    } catch (error) {
-
-      console.error(error);
-
-      res.status(500).json({
-        error:
-          error.message
-      });
-    }
-  }
-);
-
-
-/* =========================================================
-   TV FAVORITES
-========================================================= */
-
-app.get(
-  "/simkl/favorites/shows",
-  async (req, res) => {
-
-    try {
-
-      const data =
-        await getSimklItems(
-          "tv",
-          "favorites"
-        );
-
-      const shows =
-        data.tv || [];
 
       res.json({
         success: true,
