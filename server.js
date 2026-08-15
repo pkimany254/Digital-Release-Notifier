@@ -294,78 +294,207 @@ app.post(
 );
 
 /* =========================================================
-   SIMKL WATCHLIST
+   SIMKL WATCHLIST + FAVORITES
 ========================================================= */
 
-app.get("/simkl/watchlist", async (req, res) => {
+async function getSimklItems(type, status) {
 
-  try {
+  const account = db.prepare(`
+    SELECT access_token
+    FROM simkl_accounts
+    ORDER BY id DESC
+    LIMIT 1
+  `).get();
 
-    const account = db.prepare(`
-      SELECT access_token
-      FROM simkl_accounts
-      ORDER BY id DESC
-      LIMIT 1
-    `).get();
-
-    if (!account) {
-      return res.status(401).json({
-        error: "No Simkl account connected"
-      });
-    }
-
-    const response = await fetch(
-      "https://api.simkl.com/sync/all-items/movies/plantowatch",
-      {
-        method: "GET",
-
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization":
-            `Bearer ${account.access_token}`,
-          "simkl-api-key":
-            SIMKL_CLIENT_ID
-        }
-      }
+  if (!account) {
+    throw new Error(
+      "No Simkl account connected"
     );
-
-    const data = await response.json();
-
-    if (!response.ok) {
-
-      console.error(
-        "Simkl watchlist error:",
-        data
-      );
-
-      return res.status(response.status).json({
-        error: "Failed to read Simkl watchlist",
-        details: data
-      });
-    }
-
-   const movies =
-  data.movies || [];
-
-res.json({
-  success: true,
-  count: movies.length,
-  items: movies
-});
-
-  } catch (error) {
-
-    console.error(
-      "Simkl watchlist error:",
-      error
-    );
-
-    res.status(500).json({
-      error:
-        "Failed to connect to Simkl"
-    });
   }
-});
+
+  const response = await fetch(
+    `https://api.simkl.com/sync/all-items/${type}/${status}`,
+    {
+      method: "GET",
+
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization":
+          `Bearer ${account.access_token}`,
+        "simkl-api-key":
+          SIMKL_CLIENT_ID
+      }
+    }
+  );
+
+  const data =
+    await response.json();
+
+  if (!response.ok) {
+    console.error(
+      `Simkl ${type}/${status} error:`,
+      data
+    );
+
+    throw new Error(
+      `Simkl API request failed: ${response.status}`
+    );
+  }
+
+  return data;
+}
+
+
+/* =========================================================
+   MOVIE WATCHLIST
+========================================================= */
+
+app.get(
+  "/simkl/watchlist/movies",
+  async (req, res) => {
+
+    try {
+
+      const data =
+        await getSimklItems(
+          "movies",
+          "plantowatch"
+        );
+
+      const movies =
+        data.movies || [];
+
+      res.json({
+        success: true,
+        count: movies.length,
+        items: movies
+      });
+
+    } catch (error) {
+
+      console.error(error);
+
+      res.status(500).json({
+        error:
+          error.message
+      });
+    }
+  }
+);
+
+
+/* =========================================================
+   TV WATCHLIST
+========================================================= */
+
+app.get(
+  "/simkl/watchlist/shows",
+  async (req, res) => {
+
+    try {
+
+      const data =
+        await getSimklItems(
+          "tv",
+          "plantowatch"
+        );
+
+      const shows =
+        data.tv || [];
+
+      res.json({
+        success: true,
+        count: shows.length,
+        items: shows
+      });
+
+    } catch (error) {
+
+      console.error(error);
+
+      res.status(500).json({
+        error:
+          error.message
+      });
+    }
+  }
+);
+
+
+/* =========================================================
+   MOVIE FAVORITES
+========================================================= */
+
+app.get(
+  "/simkl/favorites/movies",
+  async (req, res) => {
+
+    try {
+
+      const data =
+        await getSimklItems(
+          "movies",
+          "favorites"
+        );
+
+      const movies =
+        data.movies || [];
+
+      res.json({
+        success: true,
+        count: movies.length,
+        items: movies
+      });
+
+    } catch (error) {
+
+      console.error(error);
+
+      res.status(500).json({
+        error:
+          error.message
+      });
+    }
+  }
+);
+
+
+/* =========================================================
+   TV FAVORITES
+========================================================= */
+
+app.get(
+  "/simkl/favorites/shows",
+  async (req, res) => {
+
+    try {
+
+      const data =
+        await getSimklItems(
+          "tv",
+          "favorites"
+        );
+
+      const shows =
+        data.tv || [];
+
+      res.json({
+        success: true,
+        count: shows.length,
+        items: shows
+      });
+
+    } catch (error) {
+
+      console.error(error);
+
+      res.status(500).json({
+        error:
+          error.message
+      });
+    }
+  }
+);
 
 /* =========================================================
    SIMKL OAUTH
