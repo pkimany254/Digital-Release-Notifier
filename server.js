@@ -13,6 +13,12 @@ const TELEGRAM_BOT_TOKEN =
 const TELEGRAM_CHAT_ID =
   process.env.TELEGRAM_CHAT_ID;
 
+const SIMKL_CLIENT_ID =
+  process.env.SIMKL_CLIENT_ID;
+
+const SIMKL_CLIENT_SECRET =
+  process.env.SIMKL_CLIENT_SECRET;
+
 if (!TMDB_API_KEY) {
   console.warn(
     "WARNING: TMDB_API_KEY is not configured"
