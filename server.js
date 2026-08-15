@@ -47,9 +47,17 @@ db.exec(`
   )
 `);
 
- /* =========================================================
-    TMDB DIGITAL RELEASE CHECKER
- ========================================================= */
+db.exec(`
+  CREATE TABLE IF NOT EXISTS simkl_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    access_token TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
+/* =========================================================
+   TMDB DIGITAL RELEASE CHECKER
+========================================================= */
 
 async function checkDigitalRelease(tmdbId) {
   if (!TMDB_API_KEY) {
@@ -80,6 +88,7 @@ async function checkDigitalRelease(tmdbId) {
    * Look through all countries.
    * TMDB release type 4 = Digital.
    */
+
   for (const country of results) {
 
     const releases =
@@ -148,6 +157,7 @@ app.get(
 ========================================================= */
 
 async function sendTelegramNotification(message) {
+
   if (
     !TELEGRAM_BOT_TOKEN ||
     !TELEGRAM_CHAT_ID
@@ -162,9 +172,11 @@ async function sendTelegramNotification(message) {
 
   const response = await fetch(url, {
     method: "POST",
+
     headers: {
       "Content-Type": "application/json"
     },
+
     body: JSON.stringify({
       chat_id: TELEGRAM_CHAT_ID,
       text: message
@@ -180,12 +192,12 @@ async function sendTelegramNotification(message) {
   return response.json();
 }
 
-
 /* =========================================================
    CHECK WATCHLIST
 ========================================================= */
 
 async function checkWatchlist() {
+
   const movies = db.prepare(`
     SELECT *
     FROM watchlist
@@ -207,36 +219,36 @@ async function checkWatchlist() {
 
       if (result.available) {
 
-  const message =
-    `🔔 Digital Release Available\n\n` +
-    `${movie.title}\n\n` +
-    `Digital release detected by TMDB.` +
-    (
-      result.country
-        ? `\nCountry: ${result.country}`
-        : ""
-    ) +
-    (
-      result.release_date
-        ? `\nRelease date: ${result.release_date}`
-        : ""
-    );
+        const message =
+          `🔔 Digital Release Available\n\n` +
+          `${movie.title}\n\n` +
+          `Digital release detected by TMDB.` +
+          (
+            result.country
+              ? `\nCountry: ${result.country}`
+              : ""
+          ) +
+          (
+            result.release_date
+              ? `\nRelease date: ${result.release_date}`
+              : ""
+          );
 
-  await sendTelegramNotification(
-    message
-  );
+        await sendTelegramNotification(
+          message
+        );
 
-  db.prepare(`
-    UPDATE watchlist
-    SET
-      digital_available = 1,
-      notified = 1
-    WHERE tmdb_id = ?
-  `).run(movie.tmdb_id);
+        db.prepare(`
+          UPDATE watchlist
+          SET
+            digital_available = 1,
+            notified = 1
+          WHERE tmdb_id = ?
+        `).run(movie.tmdb_id);
 
-  console.log(
-    `Digital release found and notification sent: ${movie.title}`
-  );
+        console.log(
+          `Digital release found and notification sent: ${movie.title}`
+        );
 
       } else {
 
@@ -281,7 +293,6 @@ app.post(
   }
 );
 
-
 /* =========================================================
    SIMKL OAUTH
 ========================================================= */
@@ -318,9 +329,11 @@ app.get(
         "https://api.simkl.com/oauth/token",
         {
           method: "POST",
+
           headers: {
             "Content-Type": "application/json"
           },
+
           body: JSON.stringify({
             code,
             client_id: SIMKL_CLIENT_ID,
@@ -337,6 +350,7 @@ app.get(
         await response.json();
 
       if (!response.ok) {
+
         console.error(
           "Simkl token error:",
           data
@@ -347,13 +361,40 @@ app.get(
         );
       }
 
-      res.json({
-        success: true,
-        message:
-          "Simkl account connected successfully.",
-        token_received:
-          Boolean(data.access_token)
-      });
+      /* =====================================================
+         SAVE SIMKL ACCESS TOKEN
+      ===================================================== */
+
+      if (!data.access_token) {
+
+        return res.status(500).send(
+          "Simkl did not provide an access token."
+        );
+      }
+
+      /*
+       * For now we keep one connected Simkl account.
+       * Later, when we make this multi-user,
+       * this table will store one account per user.
+       */
+
+      db.prepare(`
+        DELETE FROM simkl_accounts
+      `).run();
+
+      db.prepare(`
+        INSERT INTO simkl_accounts (
+          access_token
+        )
+        VALUES (?)
+      `).run(
+        data.access_token
+      );
+
+      res.send(`
+        <h2>Simkl account connected successfully! ✅</h2>
+        <p>Your Simkl connection has been saved.</p>
+      `);
 
     } catch (error) {
 
@@ -366,25 +407,26 @@ app.get(
   }
 );
 
-
 /* =========================================================
    HEALTH CHECK
 ========================================================= */
 
 app.get("/", (req, res) => {
+
   res.json({
     status: "ok",
     service: "watchlist-notifier",
     version: "0.1.0"
   });
-});
 
+});
 
 /* =========================================================
    ADD TO WATCHLIST
 ========================================================= */
 
 app.post("/watchlist", (req, res) => {
+
   const {
     tmdb_id,
     title,
@@ -392,12 +434,15 @@ app.post("/watchlist", (req, res) => {
   } = req.body;
 
   if (!tmdb_id || !title) {
+
     return res.status(400).json({
-      error: "tmdb_id and title are required"
+      error:
+        "tmdb_id and title are required"
     });
   }
 
   try {
+
     const stmt = db.prepare(`
       INSERT INTO watchlist (
         tmdb_id,
@@ -427,19 +472,21 @@ app.post("/watchlist", (req, res) => {
       error.code ===
       "SQLITE_CONSTRAINT_UNIQUE"
     ) {
+
       return res.status(409).json({
-        error: "Movie already exists in watchlist"
+        error:
+          "Movie already exists in watchlist"
       });
     }
 
     console.error(error);
 
     res.status(500).json({
-      error: "Failed to add movie"
+      error:
+        "Failed to add movie"
     });
   }
 });
-
 
 /* =========================================================
    GET WATCHLIST
@@ -457,8 +504,8 @@ app.get("/watchlist", (req, res) => {
     count: rows.length,
     items: rows
   });
-});
 
+});
 
 /* =========================================================
    REMOVE FROM WATCHLIST
@@ -472,8 +519,10 @@ app.delete(
       Number(req.params.tmdbId);
 
     if (!Number.isInteger(tmdbId)) {
+
       return res.status(400).json({
-        error: "Invalid TMDB ID"
+        error:
+          "Invalid TMDB ID"
       });
     }
 
@@ -483,8 +532,10 @@ app.delete(
     `).run(tmdbId);
 
     if (result.changes === 0) {
+
       return res.status(404).json({
-        error: "Movie not found in watchlist"
+        error:
+          "Movie not found in watchlist"
       });
     }
 
@@ -492,16 +543,18 @@ app.delete(
       success: true,
       tmdb_id: tmdbId
     });
+
   }
 );
-
 
 /* =========================================================
    START SERVER
 ========================================================= */
 
 app.listen(PORT, () => {
+
   console.log(
     `Watchlist notifier running on port ${PORT}`
   );
+
 });
