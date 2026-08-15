@@ -400,7 +400,7 @@ app.get(
         );
 
       const shows =
-        data.tv || [];
+  data.shows || [];
 
       res.json({
         success: true,
