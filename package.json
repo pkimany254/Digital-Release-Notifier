@@ -1,0 +1,13 @@
+{
+  "name": "watchlist-notifier",
+  "version": "0.1.0",
+  "description": "Watchlist service that monitors TMDB for digital releases and sends notifications.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "better-sqlite3": "^12.4.1"
+  }
+}
