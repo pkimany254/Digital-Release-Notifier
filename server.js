@@ -536,6 +536,33 @@ app.get(
   }
 );
 
+app.get(
+  "/simkl/debug/watching",
+  async (req, res) => {
+    try {
+      const data = await getSimklItems(
+        "tv",
+        "watching"
+      );
+
+      res.json({
+        success: true,
+        raw: data
+      });
+
+    } catch (error) {
+      console.error(
+        "Simkl watching debug error:",
+        error
+      );
+
+      res.status(500).json({
+        error: error.message
+      });
+    }
+  }
+);
+
 /* =========================================================
    SIMKL OAUTH
 ========================================================= */
