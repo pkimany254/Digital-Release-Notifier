@@ -277,6 +277,91 @@ app.post(
 
 
 /* =========================================================
+   SIMKL OAUTH
+========================================================= */
+
+app.get("/auth/simkl", (req, res) => {
+
+  const redirectUri =
+    "https://digital-release-notifier-production.up.railway.app/auth/simkl/callback";
+
+  const authUrl =
+    "https://simkl.com/oauth/authorize" +
+    `?response_type=code` +
+    `&client_id=${encodeURIComponent(SIMKL_CLIENT_ID)}` +
+    `&redirect_uri=${encodeURIComponent(redirectUri)}`;
+
+  res.redirect(authUrl);
+});
+
+app.get(
+  "/auth/simkl/callback",
+  async (req, res) => {
+
+    const { code } = req.query;
+
+    if (!code) {
+      return res.status(400).send(
+        "Simkl authorization code missing."
+      );
+    }
+
+    try {
+
+      const response = await fetch(
+        "https://api.simkl.com/oauth/token",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            code,
+            client_id: SIMKL_CLIENT_ID,
+            client_secret: SIMKL_CLIENT_SECRET,
+            redirect_uri:
+              "https://digital-release-notifier-production.up.railway.app/auth/simkl/callback",
+            grant_type:
+              "authorization_code"
+          })
+        }
+      );
+
+      const data =
+        await response.json();
+
+      if (!response.ok) {
+        console.error(
+          "Simkl token error:",
+          data
+        );
+
+        return res.status(500).send(
+          "Failed to connect Simkl account."
+        );
+      }
+
+      res.json({
+        success: true,
+        message:
+          "Simkl account connected successfully.",
+        token_received:
+          Boolean(data.access_token)
+      });
+
+    } catch (error) {
+
+      console.error(error);
+
+      res.status(500).send(
+        "Simkl connection failed."
+      );
+    }
+  }
+);
+
+
+/* =========================================================
    HEALTH CHECK
 ========================================================= */
 
