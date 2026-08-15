@@ -1266,33 +1266,179 @@ app.delete(
 );
 
 /* =========================================================
-   AUTOMATIC SIMKL MOVIE CHECK
+   RUN ALL SIMKL CHECKS
+========================================================= */
+
+let checkInProgress = false;
+
+let lastCheck = {
+  started_at: null,
+  finished_at: null,
+  movies: null,
+  shows: null,
+  error: null
+};
+
+async function runAllSimklChecks() {
+
+  if (checkInProgress) {
+
+    console.log(
+      "A Simkl check is already running. Skipping this run."
+    );
+
+    return {
+      success: false,
+      skipped: true,
+      reason: "check_in_progress"
+    };
+  }
+
+  checkInProgress = true;
+
+  lastCheck = {
+    started_at: new Date().toISOString(),
+    finished_at: null,
+    movies: null,
+    shows: null,
+    error: null
+  };
+
+  try {
+
+    console.log(
+      "========================================"
+    );
+
+    console.log(
+      "Running automatic Simkl checks..."
+    );
+
+    console.log(
+      "========================================"
+    );
+
+    /* =====================================================
+       MOVIES
+    ===================================================== */
+
+    console.log(
+      "Running Simkl movie check..."
+    );
+
+    const movieResult =
+      await checkSimklMovieWatchlist();
+
+    lastCheck.movies =
+      movieResult;
+
+    console.log(
+      "Automatic movie check completed:",
+      movieResult
+    );
+
+    /* =====================================================
+       TV SHOWS
+    ===================================================== */
+
+    console.log(
+      "Running Simkl TV show check..."
+    );
+
+    const showResult =
+      await checkSimklShowWatchlist();
+
+    lastCheck.shows =
+      showResult;
+
+    console.log(
+      "Automatic TV show check completed:",
+      showResult
+    );
+
+    lastCheck.finished_at =
+      new Date().toISOString();
+
+    console.log(
+      "All Simkl checks completed."
+    );
+
+    return {
+      success: true,
+      movies: movieResult,
+      shows: showResult
+    };
+
+  } catch (error) {
+
+    lastCheck.error =
+      error.message;
+
+    lastCheck.finished_at =
+      new Date().toISOString();
+
+    console.error(
+      "Automatic Simkl check failed:",
+      error
+    );
+
+    return {
+      success: false,
+      error: error.message,
+      movies: lastCheck.movies,
+      shows: lastCheck.shows
+    };
+
+  } finally {
+
+    checkInProgress = false;
+  }
+}
+
+
+/* =========================================================
+   MANUAL FULL CHECK
+========================================================= */
+
+app.get(
+  "/simkl/run-all",
+  async (req, res) => {
+
+    const result =
+      await runAllSimklChecks();
+
+    res.json(result);
+  }
+);
+
+
+/* =========================================================
+   CHECK STATUS
+========================================================= */
+
+app.get(
+  "/simkl/status",
+  (req, res) => {
+
+    res.json({
+      success: true,
+      check_in_progress:
+        checkInProgress,
+      last_check:
+        lastCheck
+    });
+  }
+);
+
+
+/* =========================================================
+   AUTOMATIC 6-HOUR CHECK
 ========================================================= */
 
 setInterval(
   async () => {
 
-    try {
-
-      console.log(
-        "Running automatic Simkl movie check..."
-      );
-
-      const result =
-        await checkSimklMovieWatchlist();
-
-      console.log(
-        "Automatic movie check completed:",
-        result
-      );
-
-    } catch (error) {
-
-      console.error(
-        "Automatic Simkl movie check failed:",
-        error
-      );
-    }
+    await runAllSimklChecks();
 
   },
   6 * 60 * 60 * 1000
@@ -1306,6 +1452,25 @@ app.listen(PORT, () => {
 
   console.log(
     `Watchlist notifier running on port ${PORT}`
+  );
+
+  /*
+   * Run one check shortly after startup.
+   * This prevents waiting up to 6 hours after
+   * a Railway restart before the first check.
+   */
+
+  setTimeout(
+    async () => {
+
+      console.log(
+        "Running initial Simkl check after startup..."
+      );
+
+      await runAllSimklChecks();
+
+    },
+    15000
   );
 
 });
