@@ -4,6 +4,15 @@ const Database = require("better-sqlite3");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+const TMDB_API_KEY =
+  process.env.TMDB_API_KEY;
+
+if (!TMDB_API_KEY) {
+  console.warn(
+    "WARNING: TMDB_API_KEY is not configured"
+  );
+}
+
 app.use(express.json());
 
 /* =========================================================
