@@ -374,6 +374,35 @@ app.post(
   }
 );
 
+app.get(
+  "/simkl/check-movies",
+  async (req, res) => {
+
+    try {
+
+      const result =
+        await checkSimklMovieWatchlist();
+
+      res.json({
+        success: true,
+        ...result
+      });
+
+    } catch (error) {
+
+      console.error(
+        "Simkl movie check error:",
+        error
+      );
+
+      res.status(500).json({
+        error:
+          error.message
+      });
+    }
+  }
+);
+
 /* =========================================================
    CHECK WATCHLIST
 ========================================================= */
