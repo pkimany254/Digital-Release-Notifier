@@ -294,6 +294,79 @@ app.post(
 );
 
 /* =========================================================
+   SIMKL WATCHLIST
+========================================================= */
+
+app.get("/simkl/watchlist", async (req, res) => {
+
+  try {
+
+    const account = db.prepare(`
+      SELECT access_token
+      FROM simkl_accounts
+      ORDER BY id DESC
+      LIMIT 1
+    `).get();
+
+    if (!account) {
+      return res.status(401).json({
+        error: "No Simkl account connected"
+      });
+    }
+
+    const response = await fetch(
+      "https://api.simkl.com/sync/all-items/movies/plantowatch",
+      {
+        method: "GET",
+
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization":
+            `Bearer ${account.access_token}`,
+          "simkl-api-key":
+            SIMKL_CLIENT_ID
+        }
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+
+      console.error(
+        "Simkl watchlist error:",
+        data
+      );
+
+      return res.status(response.status).json({
+        error: "Failed to read Simkl watchlist",
+        details: data
+      });
+    }
+
+    res.json({
+      success: true,
+      count: Array.isArray(data)
+        ? data.length
+        : 0,
+      items: data
+    });
+
+  } catch (error) {
+
+    console.error(
+      "Simkl watchlist error:",
+      error
+    );
+
+    res.status(500).json({
+      error:
+        "Failed to connect to Simkl"
+    });
+  }
+});
+
+/* =========================================================
    SIMKL OAUTH
 ========================================================= */
 
