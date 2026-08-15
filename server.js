@@ -31,7 +31,7 @@ app.use(express.json());
    DATABASE
 ========================================================= */
 
-const db = new Database("watchlist.db");
+const db = new Database("/data/watchlist.db");
 
 db.pragma("journal_mode = WAL");
 
