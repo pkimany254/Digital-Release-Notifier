@@ -26,23 +26,53 @@ const STARTUP_DELAY =
   15 * 1000;
 
 /*
+ * Only notify about releases/episodes that happened
+ * within this many days.
+ */
+const RELEASE_LOOKBACK_DAYS = 7;
+const EPISODE_LOOKBACK_DAYS = 7;
+
+/*
  * Number of TMDB pages to scan.
- * One page normally contains 20 results.
+ * 20 results per page.
  */
 const MOVIE_PAGES = 2;
 const TV_PAGES = 2;
 
 /*
- * Maximum number of unique movies/shows to inspect.
+ * Maximum unique movies/shows to inspect.
  */
 const MAX_MOVIES = 30;
 const MAX_SHOWS = 30;
 
+
+/* =========================================================
+   TV GENRE FILTERS
+========================================================= */
+
 /*
- * Only notify for TV episodes that aired recently.
- * Duplicate protection is handled by the database.
+ * TMDB TV genre IDs we don't want in the notifier.
+ *
+ * 16    Animation
+ * 99    Documentary
+ * 10763 News
+ * 10764 Reality
+ * 10766 Soap
+ * 10767 Talk
+ *
+ * We exclude Animation as well because the notifier
+ * is intended to avoid anime/animated catalogs.
  */
-const EPISODE_LOOKBACK_DAYS = 7;
+
+const EXCLUDED_TV_GENRES = new Set([
+  16,
+  99,
+  10763,
+  10764,
+  10766,
+  10767
+]);
+
 
 if (!TMDB_API_KEY) {
   console.warn(
@@ -59,6 +89,7 @@ if (
   );
 }
 
+
 /* =========================================================
    DATABASE
 ========================================================= */
@@ -68,9 +99,15 @@ const db =
 
 db.pragma("journal_mode = WAL");
 
+
 /*
  * Movies already notified about.
+ *
+ * We keep the existing table name from the previous
+ * version so the existing Railway volume continues
+ * to work without creating another database.
  */
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS popular_movie_notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,9 +118,11 @@ db.exec(`
   )
 `);
 
+
 /*
  * TV episodes already notified about.
  */
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS popular_episode_notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,6 +135,53 @@ db.exec(`
     UNIQUE(tmdb_id, season, episode)
   )
 `);
+
+
+/* =========================================================
+   DATE HELPERS
+========================================================= */
+
+function getCutoffDate(days) {
+
+  const date =
+    new Date();
+
+  date.setDate(
+    date.getDate() - days
+  );
+
+  return date;
+}
+
+
+function formatDate(dateString) {
+
+  if (!dateString) {
+    return "";
+  }
+
+  const date =
+    new Date(dateString);
+
+  if (
+    Number.isNaN(
+      date.getTime()
+    )
+  ) {
+    return dateString;
+  }
+
+  return new Intl.DateTimeFormat(
+    "en-GB",
+    {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      timeZone: "UTC"
+    }
+  ).format(date);
+}
+
 
 /* =========================================================
    TMDB HELPER
@@ -116,7 +202,9 @@ async function tmdb(path) {
 
   const url =
     `https://api.themoviedb.org/3${path}` +
-    `${separator}api_key=${encodeURIComponent(TMDB_API_KEY)}`;
+    `${separator}api_key=${encodeURIComponent(
+      TMDB_API_KEY
+    )}`;
 
   const response =
     await fetch(url);
@@ -133,6 +221,7 @@ async function tmdb(path) {
 
   return response.json();
 }
+
 
 /* =========================================================
    TELEGRAM
@@ -166,8 +255,12 @@ async function sendTelegramNotification(
       body: JSON.stringify({
         chat_id:
           TELEGRAM_CHAT_ID,
+
         text:
-          message
+          message,
+
+        disable_web_page_preview:
+          true
       })
     });
 
@@ -184,6 +277,7 @@ async function sendTelegramNotification(
   return response.json();
 }
 
+
 /* =========================================================
    GET POPULAR + TRENDING MOVIES
 ========================================================= */
@@ -192,6 +286,7 @@ async function getPopularMovies() {
 
   const movies =
     new Map();
+
 
   /*
    * Popular movies.
@@ -212,15 +307,31 @@ async function getPopularMovies() {
       const movie of data.results || []
     ) {
 
-      if (movie.id) {
-
-        movies.set(
-          movie.id,
-          movie
-        );
+      if (!movie.id) {
+        continue;
       }
+
+      /*
+       * Exclude animation because the notifier
+       * is intended to avoid anime/animated titles.
+       */
+
+      if (
+        Array.isArray(
+          movie.genre_ids
+        ) &&
+        movie.genre_ids.includes(16)
+      ) {
+        continue;
+      }
+
+      movies.set(
+        movie.id,
+        movie
+      );
     }
   }
+
 
   /*
    * Weekly trending movies.
@@ -235,17 +346,28 @@ async function getPopularMovies() {
     const movie of trending.results || []
   ) {
 
-    if (movie.id) {
-
-      movies.set(
-        movie.id,
-        movie
-      );
+    if (!movie.id) {
+      continue;
     }
+
+    if (
+      Array.isArray(
+        movie.genre_ids
+      ) &&
+      movie.genre_ids.includes(16)
+    ) {
+      continue;
+    }
+
+    movies.set(
+      movie.id,
+      movie
+    );
   }
 
+
   /*
-   * Sort by popularity and keep the top candidates.
+   * Sort by popularity.
    */
 
   return Array.from(
@@ -262,8 +384,9 @@ async function getPopularMovies() {
     );
 }
 
+
 /* =========================================================
-   CHECK MOVIE DIGITAL RELEASE
+   GET RECENT DIGITAL RELEASE
 ========================================================= */
 
 async function getDigitalRelease(
@@ -275,11 +398,17 @@ async function getDigitalRelease(
       `/movie/${tmdbId}/release_dates`
     );
 
+  const cutoff =
+    getCutoffDate(
+      RELEASE_LOOKBACK_DAYS
+    );
+
   const now =
     new Date();
 
   const candidates =
     [];
+
 
   for (
     const country of data.results || []
@@ -295,7 +424,12 @@ async function getDigitalRelease(
        */
 
       if (
-        release.type !== 4 ||
+        release.type !== 4
+      ) {
+        continue;
+      }
+
+      if (
         !release.release_date
       ) {
         continue;
@@ -306,42 +440,87 @@ async function getDigitalRelease(
           release.release_date
         );
 
+      if (
+        Number.isNaN(
+          releaseDate.getTime()
+        )
+      ) {
+        continue;
+      }
+
+
       /*
-       * Ignore future digital releases.
+       * Must already be released.
        */
 
       if (
-        releaseDate <= now
+        releaseDate > now
       ) {
-
-        candidates.push({
-          country:
-            country.iso_3166_1,
-
-          release_date:
-            release.release_date
-        });
+        continue;
       }
+
+
+      /*
+       * IMPORTANT:
+       *
+       * Only consider recent digital releases.
+       *
+       * This prevents old releases such as:
+       *
+       * Spider-Man (2017)
+       * Spider-Man: No Way Home (2022)
+       *
+       * from being reported as new.
+       */
+
+      if (
+        releaseDate < cutoff
+      ) {
+        continue;
+      }
+
+
+      candidates.push({
+        country:
+          country.iso_3166_1,
+
+        release_date:
+          release.release_date
+      });
     }
   }
+
 
   if (
     !candidates.length
   ) {
 
     return {
-      available: false
+      available:
+        false
     };
   }
 
+
+  /*
+   * If several countries have recent digital
+   * releases, use the earliest one.
+   */
+
   candidates.sort(
     (a, b) =>
-      new Date(a.release_date) -
-      new Date(b.release_date)
+      new Date(
+        a.release_date
+      ) -
+      new Date(
+        b.release_date
+      )
   );
 
+
   return {
-    available: true,
+    available:
+      true,
 
     country:
       candidates[0].country,
@@ -350,6 +529,7 @@ async function getDigitalRelease(
       candidates[0].release_date
   };
 }
+
 
 /* =========================================================
    CHECK POPULAR MOVIES
@@ -361,14 +541,16 @@ async function checkPopularMovies() {
     await getPopularMovies();
 
   let checked = 0;
-  let released = 0;
+  let recentDigitalReleases = 0;
   let notified = 0;
   let alreadyNotified = 0;
   let errors = 0;
 
+
   console.log(
     `Checking ${movies.length} popular/trending movie(s)...`
   );
+
 
   for (
     const movie of movies
@@ -378,23 +560,27 @@ async function checkPopularMovies() {
 
       checked++;
 
+
       const release =
         await getDigitalRelease(
           movie.id
         );
+
 
       if (
         !release.available
       ) {
 
         console.log(
-          `No digital release: ${movie.title}`
+          `No recent digital release: ${movie.title}`
         );
 
         continue;
       }
 
-      released++;
+
+      recentDigitalReleases++;
+
 
       const existing =
         db.prepare(`
@@ -404,6 +590,7 @@ async function checkPopularMovies() {
         `).get(
           movie.id
         );
+
 
       if (existing) {
 
@@ -416,6 +603,7 @@ async function checkPopularMovies() {
         continue;
       }
 
+
       const year =
         movie.release_date
           ? movie.release_date.slice(
@@ -424,8 +612,9 @@ async function checkPopularMovies() {
             )
           : "";
 
+
       const message =
-        `🔔 New Digital Release\n\n` +
+        `🔔 NEW DIGITAL RELEASE\n\n` +
         `🎬 ${movie.title}` +
         (
           year
@@ -433,12 +622,16 @@ async function checkPopularMovies() {
             : ""
         ) +
         `\n\n` +
-        `Digital release available.` +
-        `\nRelease date: ${release.release_date}`;
+        `💿 Digital release available` +
+        `\n📅 ${formatDate(
+          release.release_date
+        )}`;
+
 
       await sendTelegramNotification(
         message
       );
+
 
       db.prepare(`
         INSERT INTO popular_movie_notifications (
@@ -453,7 +646,9 @@ async function checkPopularMovies() {
         release.release_date
       );
 
+
       notified++;
+
 
       console.log(
         `NOTIFIED movie: ${movie.title}`
@@ -470,13 +665,15 @@ async function checkPopularMovies() {
     }
   }
 
+
   return {
     total:
       movies.length,
 
     checked,
 
-    released,
+    recent_digital_releases:
+      recentDigitalReleases,
 
     notified,
 
@@ -487,6 +684,7 @@ async function checkPopularMovies() {
   };
 }
 
+
 /* =========================================================
    GET POPULAR + TRENDING TV SHOWS
 ========================================================= */
@@ -496,8 +694,9 @@ async function getPopularShows() {
   const shows =
     new Map();
 
+
   /*
-   * Popular TV shows.
+   * Popular TV.
    */
 
   for (
@@ -515,30 +714,9 @@ async function getPopularShows() {
       const show of data.results || []
     ) {
 
-      if (show.id) {
-
-        shows.set(
-          show.id,
-          show
-        );
+      if (!show.id) {
+        continue;
       }
-    }
-  }
-
-  /*
-   * Weekly trending TV shows.
-   */
-
-  const trending =
-    await tmdb(
-      "/trending/tv/week"
-    );
-
-  for (
-    const show of trending.results || []
-  ) {
-
-    if (show.id) {
 
       shows.set(
         show.id,
@@ -546,6 +724,36 @@ async function getPopularShows() {
       );
     }
   }
+
+
+  /*
+   * Weekly trending TV.
+   */
+
+  const trending =
+    await tmdb(
+      "/trending/tv/week"
+    );
+
+
+  for (
+    const show of trending.results || []
+  ) {
+
+    if (!show.id) {
+      continue;
+    }
+
+    shows.set(
+      show.id,
+      show
+    );
+  }
+
+
+  /*
+   * Sort by popularity.
+   */
 
   return Array.from(
     shows.values()
@@ -561,6 +769,42 @@ async function getPopularShows() {
     );
 }
 
+
+/* =========================================================
+   CHECK WHETHER SHOW SHOULD BE MONITORED
+========================================================= */
+
+function isAllowedTVShow(
+  details
+) {
+
+  const genres =
+    details.genres || [];
+
+
+  /*
+   * Exclude unwanted TV categories.
+   */
+
+  for (
+    const genre of genres
+  ) {
+
+    if (
+      EXCLUDED_TV_GENRES.has(
+        genre.id
+      )
+    ) {
+
+      return false;
+    }
+  }
+
+
+  return true;
+}
+
+
 /* =========================================================
    CHECK POPULAR TV SHOW EPISODES
 ========================================================= */
@@ -571,22 +815,28 @@ async function checkPopularShows() {
     await getPopularShows();
 
   let checked = 0;
-  let available = 0;
+  let eligibleShows = 0;
+  let availableEpisodes = 0;
   let notified = 0;
   let alreadyNotified = 0;
+  let filtered = 0;
   let errors = 0;
 
+
   const cutoff =
+    getCutoffDate(
+      EPISODE_LOOKBACK_DAYS
+    );
+
+
+  const now =
     new Date();
 
-  cutoff.setDate(
-    cutoff.getDate() -
-    EPISODE_LOOKBACK_DAYS
-  );
 
   console.log(
     `Checking ${shows.length} popular/trending TV show(s)...`
   );
+
 
   for (
     const show of shows
@@ -596,9 +846,9 @@ async function checkPopularShows() {
 
       checked++;
 
+
       /*
-       * Get full show details so we can identify
-       * the latest season.
+       * Get full show details.
        */
 
       const details =
@@ -606,12 +856,45 @@ async function checkPopularShows() {
           `/tv/${show.id}`
         );
 
+
+      /*
+       * Filter out reality, documentary,
+       * talk, news, soap, animation/anime, etc.
+       */
+
+      if (
+        !isAllowedTVShow(
+          details
+        )
+      ) {
+
+        filtered++;
+
+        console.log(
+          `Filtered TV show: ${show.name}`
+        );
+
+        continue;
+      }
+
+
+      eligibleShows++;
+
+
+      /*
+       * Get all valid seasons.
+       *
+       * Season 0 = specials.
+       * We don't monitor specials.
+       */
+
       const seasons =
         (details.seasons || [])
           .filter(
             season =>
-              season.season_number >= 0
+              season.season_number > 0
           );
+
 
       if (
         !seasons.length
@@ -619,69 +902,175 @@ async function checkPopularShows() {
         continue;
       }
 
-      const latestSeason =
-        seasons.reduce(
-          (latest, season) =>
-            season.season_number >
-            latest.season_number
-              ? season
-              : latest
-        );
-
-      const seasonNumber =
-        latestSeason.season_number;
-
-      const seasonData =
-        await tmdb(
-          `/tv/${show.id}/season/${seasonNumber}`
-        );
-
-      const episodes =
-        seasonData.episodes || [];
 
       /*
-       * Only consider episodes released within
-       * the last 7 days.
+       * Check every season that could contain
+       * a recent episode.
+       *
+       * We inspect the latest season first.
        */
 
-      const newEpisodes =
-        episodes.filter(
-          episode => {
+      seasons.sort(
+        (a, b) =>
+          b.season_number -
+          a.season_number
+      );
 
-            if (
-              !episode.air_date
-            ) {
-              return false;
-            }
 
-            const airDate =
-              new Date(
-                episode.air_date
-              );
+      let recentEpisodes =
+        [];
 
-            return (
-              airDate <= new Date() &&
-              airDate >= cutoff
-            );
-          }
+
+      /*
+       * Usually the latest season is enough.
+       * But checking the first two seasons protects
+       * against cases where TMDB has unusual season
+       * ordering.
+       */
+
+      const seasonsToCheck =
+        seasons.slice(
+          0,
+          2
         );
 
+
+      for (
+        const season
+          of seasonsToCheck
+      ) {
+
+        const seasonData =
+          await tmdb(
+            `/tv/${show.id}/season/${season.season_number}`
+          );
+
+
+        for (
+          const episode
+            of seasonData.episodes || []
+        ) {
+
+          if (
+            !episode.air_date
+          ) {
+            continue;
+          }
+
+
+          const airDate =
+            new Date(
+              episode.air_date
+            );
+
+
+          if (
+            Number.isNaN(
+              airDate.getTime()
+            )
+          ) {
+            continue;
+          }
+
+
+          /*
+           * Episode must have already aired.
+           */
+
+          if (
+            airDate > now
+          ) {
+            continue;
+          }
+
+
+          /*
+           * Episode must be recent.
+           */
+
+          if (
+            airDate < cutoff
+          ) {
+            continue;
+          }
+
+
+          recentEpisodes.push({
+            season:
+              season.season_number,
+
+            episode:
+              episode.episode_number,
+
+            name:
+              episode.name,
+
+            air_date:
+              episode.air_date
+          });
+        }
+      }
+
+
+      /*
+       * Remove duplicate episodes.
+       */
+
+      const uniqueEpisodes =
+        new Map();
+
+
+      for (
+        const episode
+          of recentEpisodes
+      ) {
+
+        uniqueEpisodes.set(
+          `${episode.season}-${episode.episode}`,
+          episode
+        );
+      }
+
+
+      recentEpisodes =
+        Array.from(
+          uniqueEpisodes.values()
+        );
+
+
       if (
-        !newEpisodes.length
+        !recentEpisodes.length
       ) {
         continue;
       }
 
-      available +=
-        newEpisodes.length;
+
+      availableEpisodes +=
+        recentEpisodes.length;
+
 
       /*
-       * Notify every new episode once.
+       * Sort oldest → newest.
+       */
+
+      recentEpisodes.sort(
+        (a, b) =>
+          new Date(
+            a.air_date
+          ) -
+          new Date(
+            b.air_date
+          )
+      );
+
+
+      /*
+       * Notify each episode once.
        */
 
       for (
         const episode
-          of newEpisodes
+          of recentEpisodes
       ) {
 
         const existing =
@@ -693,9 +1082,10 @@ async function checkPopularShows() {
               AND episode = ?
           `).get(
             show.id,
-            seasonNumber,
-            episode.episode_number
+            episode.season,
+            episode.episode
           );
+
 
         if (existing) {
 
@@ -704,24 +1094,36 @@ async function checkPopularShows() {
           continue;
         }
 
+
         const episodeCode =
           `S${String(
-            seasonNumber
-          ).padStart(2, "0")}` +
+            episode.season
+          ).padStart(
+            2,
+            "0"
+          )}` +
           `E${String(
-            episode.episode_number
-          ).padStart(2, "0")}`;
+            episode.episode
+          ).padStart(
+            2,
+            "0"
+          )}`;
+
 
         const message =
-          `📺 New Episode Available\n\n` +
-          `${show.name}\n` +
+          `📺 NEW EPISODE\n\n` +
+          `🎬 ${show.name}\n` +
           `${episodeCode} — ${episode.name}` +
           `\n\n` +
-          `Release date: ${episode.air_date}`;
+          `📅 ${formatDate(
+            episode.air_date
+          )}`;
+
 
         await sendTelegramNotification(
           message
         );
+
 
         db.prepare(`
           INSERT INTO popular_episode_notifications (
@@ -734,13 +1136,15 @@ async function checkPopularShows() {
           VALUES (?, ?, ?, ?, ?)
         `).run(
           show.id,
-          seasonNumber,
-          episode.episode_number,
+          episode.season,
+          episode.episode,
           show.name,
           episode.air_date
         );
 
+
         notified++;
+
 
         console.log(
           `NOTIFIED episode: ${show.name} ${episodeCode}`
@@ -758,13 +1162,20 @@ async function checkPopularShows() {
     }
   }
 
+
   return {
     total:
       shows.length,
 
     checked,
 
-    available,
+    eligible_shows:
+      eligibleShows,
+
+    filtered,
+
+    available_episodes:
+      availableEpisodes,
 
     notified,
 
@@ -775,12 +1186,14 @@ async function checkPopularShows() {
   };
 }
 
+
 /* =========================================================
    RUN EVERYTHING
 ========================================================= */
 
 let checkInProgress =
   false;
+
 
 let lastCheck = {
   started_at:
@@ -798,6 +1211,7 @@ let lastCheck = {
   error:
     null
 };
+
 
 async function runAllChecks() {
 
@@ -821,8 +1235,10 @@ async function runAllChecks() {
     };
   }
 
+
   checkInProgress =
     true;
+
 
   lastCheck = {
     started_at:
@@ -841,6 +1257,7 @@ async function runAllChecks() {
       null
   };
 
+
   try {
 
     console.log(
@@ -855,30 +1272,51 @@ async function runAllChecks() {
       "========================================"
     );
 
+
+    /*
+     * MOVIES
+     */
+
     const movies =
       await checkPopularMovies();
 
+
     lastCheck.movies =
       movies;
+
 
     console.log(
       "Movie check completed:",
       movies
     );
 
+
+    /*
+     * TV SHOWS
+     */
+
     const shows =
       await checkPopularShows();
 
+
     lastCheck.shows =
       shows;
+
 
     console.log(
       "TV check completed:",
       shows
     );
 
+
     lastCheck.finished_at =
       new Date().toISOString();
+
+
+    console.log(
+      "All checks completed."
+    );
+
 
     return {
       success:
@@ -894,13 +1332,16 @@ async function runAllChecks() {
     lastCheck.error =
       error.message;
 
+
     lastCheck.finished_at =
       new Date().toISOString();
+
 
     console.error(
       "Release check failed:",
       error
     );
+
 
     return {
       success:
@@ -923,8 +1364,9 @@ async function runAllChecks() {
   }
 }
 
+
 /* =========================================================
-   MANUAL CHECK
+   MANUAL FULL CHECK
 ========================================================= */
 
 app.get(
@@ -939,6 +1381,7 @@ app.get(
     );
   }
 );
+
 
 /* =========================================================
    STATUS
@@ -961,6 +1404,7 @@ app.get(
   }
 );
 
+
 /* =========================================================
    TEST MOVIE
 ========================================================= */
@@ -974,17 +1418,21 @@ app.get(
         req.params.tmdbId
       );
 
+
     if (
       !Number.isInteger(
         tmdbId
       )
     ) {
 
-      return res.status(400).json({
+      return res.status(
+        400
+      ).json({
         error:
           "Invalid TMDB ID"
       });
     }
+
 
     try {
 
@@ -993,10 +1441,12 @@ app.get(
           `/movie/${tmdbId}`
         );
 
+
       const release =
         await getDigitalRelease(
           tmdbId
         );
+
 
       res.json({
         success:
@@ -1014,7 +1464,10 @@ app.get(
         },
 
         digital_release:
-          release
+          release,
+
+        lookback_days:
+          RELEASE_LOOKBACK_DAYS
       });
 
     } catch (error) {
@@ -1023,7 +1476,10 @@ app.get(
         error
       );
 
-      res.status(500).json({
+
+      res.status(
+        500
+      ).json({
         success:
           false,
 
@@ -1033,6 +1489,7 @@ app.get(
     }
   }
 );
+
 
 /* =========================================================
    TEST TV SHOW
@@ -1047,17 +1504,21 @@ app.get(
         req.params.tmdbId
       );
 
+
     if (
       !Number.isInteger(
         tmdbId
       )
     ) {
 
-      return res.status(400).json({
+      return res.status(
+        400
+      ).json({
         error:
           "Invalid TMDB ID"
       });
     }
+
 
     try {
 
@@ -1066,12 +1527,41 @@ app.get(
           `/tv/${tmdbId}`
         );
 
+
+      const allowed =
+        isAllowedTVShow(
+          details
+        );
+
+
+      if (!allowed) {
+
+        return res.json({
+          success:
+            true,
+
+          title:
+            details.name,
+
+          allowed:
+            false,
+
+          reason:
+            "Filtered TV genre",
+
+          recent_released_episodes:
+            []
+        });
+      }
+
+
       const seasons =
         (details.seasons || [])
           .filter(
             season =>
-              season.season_number >= 0
+              season.season_number > 0
           );
+
 
       if (
         !seasons.length
@@ -1084,57 +1574,89 @@ app.get(
           title:
             details.name,
 
+          allowed:
+            true,
+
           episodes:
             []
         });
       }
 
-      const latestSeason =
-        seasons.reduce(
-          (latest, season) =>
-            season.season_number >
-            latest.season_number
-              ? season
-              : latest
-        );
 
-      const seasonData =
-        await tmdb(
-          `/tv/${tmdbId}/season/${latestSeason.season_number}`
-        );
-
-      const cutoff =
-        new Date();
-
-      cutoff.setDate(
-        cutoff.getDate() -
-        EPISODE_LOOKBACK_DAYS
+      seasons.sort(
+        (a, b) =>
+          b.season_number -
+          a.season_number
       );
 
-      const episodes =
-        (seasonData.episodes || [])
-          .filter(
-            episode =>
-              episode.air_date &&
-              new Date(
-                episode.air_date
-              ) <= new Date() &&
-              new Date(
-                episode.air_date
-              ) >= cutoff
-          )
-          .map(
-            episode => ({
-              episode:
-                episode.episode_number,
 
-              name:
-                episode.name,
+      const cutoff =
+        getCutoffDate(
+          EPISODE_LOOKBACK_DAYS
+        );
 
-              air_date:
-                episode.air_date
-            })
+
+      const now =
+        new Date();
+
+
+      const recentEpisodes =
+        [];
+
+
+      for (
+        const season
+          of seasons.slice(0, 2)
+      ) {
+
+        const seasonData =
+          await tmdb(
+            `/tv/${tmdbId}/season/${season.season_number}`
           );
+
+
+        for (
+          const episode
+            of seasonData.episodes || []
+        ) {
+
+          if (
+            !episode.air_date
+          ) {
+            continue;
+          }
+
+
+          const airDate =
+            new Date(
+              episode.air_date
+            );
+
+
+          if (
+            airDate > now ||
+            airDate < cutoff
+          ) {
+            continue;
+          }
+
+
+          recentEpisodes.push({
+            season:
+              season.season_number,
+
+            episode:
+              episode.episode_number,
+
+            name:
+              episode.name,
+
+            air_date:
+              episode.air_date
+          });
+        }
+      }
+
 
       res.json({
         success:
@@ -1146,11 +1668,14 @@ app.get(
         tmdb_id:
           tmdbId,
 
-        season:
-          latestSeason.season_number,
+        allowed:
+          true,
+
+        lookback_days:
+          EPISODE_LOOKBACK_DAYS,
 
         recent_released_episodes:
-          episodes
+          recentEpisodes
       });
 
     } catch (error) {
@@ -1159,7 +1684,10 @@ app.get(
         error
       );
 
-      res.status(500).json({
+
+      res.status(
+        500
+      ).json({
         success:
           false,
 
@@ -1169,6 +1697,7 @@ app.get(
     }
   }
 );
+
 
 /* =========================================================
    HEALTH CHECK
@@ -1186,13 +1715,20 @@ app.get(
         "movie-series-release-notifier",
 
       version:
-        "2.0.0",
+        "2.1.0",
 
       monitoring:
-        "TMDB popular and trending"
+        "TMDB popular and trending",
+
+      movie_release_window:
+        `${RELEASE_LOOKBACK_DAYS} days`,
+
+      episode_release_window:
+        `${EPISODE_LOOKBACK_DAYS} days`
     });
   }
 );
+
 
 /* =========================================================
    AUTOMATIC 6-HOUR CHECK
@@ -1207,6 +1743,7 @@ setInterval(
   CHECK_INTERVAL
 );
 
+
 /* =========================================================
    START SERVER
 ========================================================= */
@@ -1219,9 +1756,11 @@ app.listen(
       `Movie & Series Release Notifier running on port ${PORT}`
     );
 
+
     /*
      * Run one check shortly after startup.
      */
+
     setTimeout(
       async () => {
 
