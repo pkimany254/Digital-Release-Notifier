@@ -13,11 +13,36 @@ const TELEGRAM_BOT_TOKEN =
 const TELEGRAM_CHAT_ID =
   process.env.TELEGRAM_CHAT_ID;
 
-const SIMKL_CLIENT_ID =
-  process.env.SIMKL_CLIENT_ID;
+app.use(express.json());
 
-const SIMKL_CLIENT_SECRET =
-  process.env.SIMKL_CLIENT_SECRET;
+/* =========================================================
+   CONFIGURATION
+========================================================= */
+
+const CHECK_INTERVAL =
+  6 * 60 * 60 * 1000;
+
+const STARTUP_DELAY =
+  15 * 1000;
+
+/*
+ * Number of TMDB pages to scan.
+ * One page normally contains 20 results.
+ */
+const MOVIE_PAGES = 2;
+const TV_PAGES = 2;
+
+/*
+ * Maximum number of unique movies/shows to inspect.
+ */
+const MAX_MOVIES = 30;
+const MAX_SHOWS = 30;
+
+/*
+ * Only notify for TV episodes that aired recently.
+ * Duplicate protection is handled by the database.
+ */
+const EPISODE_LOOKBACK_DAYS = 7;
 
 if (!TMDB_API_KEY) {
   console.warn(
@@ -25,161 +50,97 @@ if (!TMDB_API_KEY) {
   );
 }
 
-app.use(express.json());
+if (
+  !TELEGRAM_BOT_TOKEN ||
+  !TELEGRAM_CHAT_ID
+) {
+  console.warn(
+    "WARNING: Telegram configuration is incomplete"
+  );
+}
 
 /* =========================================================
    DATABASE
 ========================================================= */
 
-const db = new Database("/data/watchlist.db");
+const db =
+  new Database("/data/watchlist.db");
 
 db.pragma("journal_mode = WAL");
 
+/*
+ * Movies already notified about.
+ */
 db.exec(`
-  CREATE TABLE IF NOT EXISTS watchlist (
+  CREATE TABLE IF NOT EXISTS popular_movie_notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     tmdb_id INTEGER NOT NULL UNIQUE,
     title TEXT NOT NULL,
-    poster TEXT,
-    added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    digital_available INTEGER NOT NULL DEFAULT 0,
-    notified INTEGER NOT NULL DEFAULT 0
-  )
-`);
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS simkl_accounts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    access_token TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  )
-`);
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS simkl_movie_notifications (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    simkl_id INTEGER NOT NULL UNIQUE,
-    tmdb_id INTEGER,
-    title TEXT NOT NULL,
+    release_date TEXT,
     notified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )
 `);
 
+/*
+ * TV episodes already notified about.
+ */
 db.exec(`
-  CREATE TABLE IF NOT EXISTS simkl_episode_notifications (
+  CREATE TABLE IF NOT EXISTS popular_episode_notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    simkl_id INTEGER NOT NULL,
     tmdb_id INTEGER NOT NULL,
     season INTEGER NOT NULL,
     episode INTEGER NOT NULL,
     title TEXT NOT NULL,
+    air_date TEXT,
     notified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(simkl_id, season, episode)
+    UNIQUE(tmdb_id, season, episode)
   )
 `);
 
 /* =========================================================
-   TMDB DIGITAL RELEASE CHECKER
+   TMDB HELPER
 ========================================================= */
 
-async function checkDigitalRelease(tmdbId) {
+async function tmdb(path) {
+
   if (!TMDB_API_KEY) {
     throw new Error(
       "TMDB_API_KEY is not configured"
     );
   }
 
+  const separator =
+    path.includes("?")
+      ? "&"
+      : "?";
+
   const url =
-    `https://api.themoviedb.org/3/movie/${tmdbId}/release_dates?api_key=${TMDB_API_KEY}`;
+    `https://api.themoviedb.org/3${path}` +
+    `${separator}api_key=${encodeURIComponent(TMDB_API_KEY)}`;
 
   const response =
     await fetch(url);
 
   if (!response.ok) {
+
+    const body =
+      await response.text();
+
     throw new Error(
-      `TMDB request failed: ${response.status}`
+      `TMDB request failed: ${response.status} ${body}`
     );
   }
 
-  const data =
-    await response.json();
-
-  const results =
-    data.results || [];
-
-  /*
-   * Look through all countries.
-   * TMDB release type 4 = Digital.
-   */
-
-  for (const country of results) {
-
-    const releases =
-      country.release_dates || [];
-
-    const digital =
-      releases.find(
-        release =>
-          release.type === 4
-      );
-
-    if (digital) {
-      return {
-        available: true,
-        country: country.iso_3166_1,
-        release_date:
-          digital.release_date || null
-      };
-    }
-  }
-
-  return {
-    available: false
-  };
+  return response.json();
 }
 
-app.get(
-  "/check/:tmdbId",
-  async (req, res) => {
-
-    const tmdbId =
-      Number(req.params.tmdbId);
-
-    if (!Number.isInteger(tmdbId)) {
-      return res.status(400).json({
-        error: "Invalid TMDB ID"
-      });
-    }
-
-    try {
-
-      const result =
-        await checkDigitalRelease(
-          tmdbId
-        );
-
-      res.json({
-        tmdb_id: tmdbId,
-        ...result
-      });
-
-    } catch (error) {
-
-      console.error(error);
-
-      res.status(500).json({
-        error:
-          "Failed to check TMDB release"
-      });
-    }
-  }
-);
-
 /* =========================================================
-   TELEGRAM NOTIFICATION
+   TELEGRAM
 ========================================================= */
 
-async function sendTelegramNotification(message) {
+async function sendTelegramNotification(
+  message
+) {
 
   if (
     !TELEGRAM_BOT_TOKEN ||
@@ -193,22 +154,30 @@ async function sendTelegramNotification(message) {
   const url =
     `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
 
-  const response = await fetch(url, {
-    method: "POST",
+  const response =
+    await fetch(url, {
+      method: "POST",
 
-    headers: {
-      "Content-Type": "application/json"
-    },
+      headers: {
+        "Content-Type":
+          "application/json"
+      },
 
-    body: JSON.stringify({
-      chat_id: TELEGRAM_CHAT_ID,
-      text: message
-    })
-  });
+      body: JSON.stringify({
+        chat_id:
+          TELEGRAM_CHAT_ID,
+        text:
+          message
+      })
+    });
 
   if (!response.ok) {
+
+    const body =
+      await response.text();
+
     throw new Error(
-      `Telegram request failed: ${response.status}`
+      `Telegram request failed: ${response.status} ${body}`
     );
   }
 
@@ -216,61 +185,207 @@ async function sendTelegramNotification(message) {
 }
 
 /* =========================================================
-   CHECK SIMKL MOVIE WATCHLIST
+   GET POPULAR + TRENDING MOVIES
 ========================================================= */
 
-async function checkSimklMovieWatchlist() {
-
-  const data =
-    await getSimklItems(
-      "movies",
-      "plantowatch"
-    );
+async function getPopularMovies() {
 
   const movies =
-    data.movies || [];
+    new Map();
 
-  console.log(
-    `Checking ${movies.length} Simkl movie(s)...`
+  /*
+   * Popular movies.
+   */
+
+  for (
+    let page = 1;
+    page <= MOVIE_PAGES;
+    page++
+  ) {
+
+    const data =
+      await tmdb(
+        `/movie/popular?page=${page}`
+      );
+
+    for (
+      const movie of data.results || []
+    ) {
+
+      if (movie.id) {
+
+        movies.set(
+          movie.id,
+          movie
+        );
+      }
+    }
+  }
+
+  /*
+   * Weekly trending movies.
+   */
+
+  const trending =
+    await tmdb(
+      "/trending/movie/week"
+    );
+
+  for (
+    const movie of trending.results || []
+  ) {
+
+    if (movie.id) {
+
+      movies.set(
+        movie.id,
+        movie
+      );
+    }
+  }
+
+  /*
+   * Sort by popularity and keep the top candidates.
+   */
+
+  return Array.from(
+    movies.values()
+  )
+    .sort(
+      (a, b) =>
+        (b.popularity || 0) -
+        (a.popularity || 0)
+    )
+    .slice(
+      0,
+      MAX_MOVIES
+    );
+}
+
+/* =========================================================
+   CHECK MOVIE DIGITAL RELEASE
+========================================================= */
+
+async function getDigitalRelease(
+  tmdbId
+) {
+
+  const data =
+    await tmdb(
+      `/movie/${tmdbId}/release_dates`
+    );
+
+  const now =
+    new Date();
+
+  const candidates =
+    [];
+
+  for (
+    const country of data.results || []
+  ) {
+
+    for (
+      const release
+        of country.release_dates || []
+    ) {
+
+      /*
+       * TMDB release type 4 = Digital.
+       */
+
+      if (
+        release.type !== 4 ||
+        !release.release_date
+      ) {
+        continue;
+      }
+
+      const releaseDate =
+        new Date(
+          release.release_date
+        );
+
+      /*
+       * Ignore future digital releases.
+       */
+
+      if (
+        releaseDate <= now
+      ) {
+
+        candidates.push({
+          country:
+            country.iso_3166_1,
+
+          release_date:
+            release.release_date
+        });
+      }
+    }
+  }
+
+  if (
+    !candidates.length
+  ) {
+
+    return {
+      available: false
+    };
+  }
+
+  candidates.sort(
+    (a, b) =>
+      new Date(a.release_date) -
+      new Date(b.release_date)
   );
+
+  return {
+    available: true,
+
+    country:
+      candidates[0].country,
+
+    release_date:
+      candidates[0].release_date
+  };
+}
+
+/* =========================================================
+   CHECK POPULAR MOVIES
+========================================================= */
+
+async function checkPopularMovies() {
+
+  const movies =
+    await getPopularMovies();
 
   let checked = 0;
   let released = 0;
-  let skipped = 0;
+  let notified = 0;
+  let alreadyNotified = 0;
+  let errors = 0;
 
-  for (const item of movies) {
+  console.log(
+    `Checking ${movies.length} popular/trending movie(s)...`
+  );
 
-    const movie =
-      item.movie;
-
-    if (!movie) {
-      skipped++;
-      continue;
-    }
-
-    const tmdbId =
-      movie.ids?.tmdb;
-
-    if (!tmdbId) {
-
-      console.log(
-        `No TMDB ID for: ${movie.title}`
-      );
-
-      skipped++;
-      continue;
-    }
+  for (
+    const movie of movies
+  ) {
 
     try {
 
       checked++;
 
-      const result =
-        await checkDigitalRelease(
-          Number(tmdbId)
+      const release =
+        await getDigitalRelease(
+          movie.id
         );
 
-      if (!result.available) {
+      if (
+        !release.available
+      ) {
 
         console.log(
           `No digital release: ${movie.title}`
@@ -281,25 +396,18 @@ async function checkSimklMovieWatchlist() {
 
       released++;
 
-      console.log(
-        `Digital release found: ${movie.title}`
-      );
-
-      /*
-       * Check whether we have already
-       * notified this movie.
-       */
-
       const existing =
         db.prepare(`
-          SELECT *
-          FROM simkl_movie_notifications
-          WHERE simkl_id = ?
+          SELECT id
+          FROM popular_movie_notifications
+          WHERE tmdb_id = ?
         `).get(
-          movie.ids?.simkl
+          movie.id
         );
 
       if (existing) {
+
+        alreadyNotified++;
 
         console.log(
           `Already notified: ${movie.title}`
@@ -308,1000 +416,429 @@ async function checkSimklMovieWatchlist() {
         continue;
       }
 
+      const year =
+        movie.release_date
+          ? movie.release_date.slice(
+              0,
+              4
+            )
+          : "";
+
       const message =
-        `🔔 Digital Release Available\n\n` +
-        `${movie.title}` +
+        `🔔 New Digital Release\n\n` +
+        `🎬 ${movie.title}` +
         (
-          movie.year
-            ? ` (${movie.year})`
+          year
+            ? ` (${year})`
             : ""
         ) +
         `\n\n` +
-        `A digital release is now available.` +
-        (
-          result.release_date
-            ? `\nRelease date: ${result.release_date}`
-            : ""
-        );
+        `Digital release available.` +
+        `\nRelease date: ${release.release_date}`;
 
       await sendTelegramNotification(
         message
       );
 
       db.prepare(`
-        INSERT INTO simkl_movie_notifications (
-          simkl_id,
+        INSERT INTO popular_movie_notifications (
           tmdb_id,
-          title
+          title,
+          release_date
         )
         VALUES (?, ?, ?)
       `).run(
-        movie.ids?.simkl,
-        Number(tmdbId),
-        movie.title
+        movie.id,
+        movie.title,
+        release.release_date
+      );
+
+      notified++;
+
+      console.log(
+        `NOTIFIED movie: ${movie.title}`
       );
 
     } catch (error) {
 
+      errors++;
+
       console.error(
-        `Failed checking ${movie.title}:`,
+        `Movie check failed for ${movie.title}:`,
         error.message
       );
     }
   }
 
   return {
-    total: movies.length,
+    total:
+      movies.length,
+
     checked,
+
     released,
-    skipped
+
+    notified,
+
+    already_notified:
+      alreadyNotified,
+
+    errors
   };
 }
 
-app.post(
-  "/simkl/check-movies",
-  async (req, res) => {
+/* =========================================================
+   GET POPULAR + TRENDING TV SHOWS
+========================================================= */
 
-    try {
-
-      const result =
-        await checkSimklMovieWatchlist();
-
-      res.json({
-        success: true,
-        ...result
-      });
-
-    } catch (error) {
-
-      console.error(
-        "Simkl movie check error:",
-        error
-      );
-
-      res.status(500).json({
-        error:
-          error.message
-      });
-    }
-  }
-);
-
-app.get(
-  "/simkl/check-movies",
-  async (req, res) => {
-
-    try {
-
-      const result =
-        await checkSimklMovieWatchlist();
-
-      res.json({
-        success: true,
-        ...result
-      });
-
-    } catch (error) {
-
-      console.error(
-        "Simkl movie check error:",
-        error
-      );
-
-      res.status(500).json({
-        error:
-          error.message
-      });
-    }
-  }
-);
-
-async function checkSimklShowEpisode(
-  simklShow
-) {
-
-  const show =
-    simklShow.show;
-
-  const simklId =
-    show.ids?.simkl;
-
-  const tmdbId =
-    show.ids?.tmdb;
-
-  const nextToWatch =
-    simklShow.next_to_watch;
-
-  if (
-    !simklId ||
-    !tmdbId ||
-    !nextToWatch
-  ) {
-    return {
-      title: show.title,
-      available: false,
-      reason: "Missing show IDs or next episode"
-    };
-  }
-
-  const match =
-    nextToWatch.match(
-      /^S(\d+)E(\d+)$/
-    );
-
-  if (!match) {
-    return {
-      title: show.title,
-      available: false,
-      reason: "Invalid next_to_watch format"
-    };
-  }
-
-  const season =
-    Number(match[1]);
-
-  const episode =
-    Number(match[2]);
-
-  const url =
-    `https://api.themoviedb.org/3/tv/${tmdbId}/season/${season}?api_key=${TMDB_API_KEY}`;
-
-  const response =
-    await fetch(url);
-
-  if (!response.ok) {
-    throw new Error(
-      `TMDB request failed: ${response.status}`
-    );
-  }
-
-  const data =
-    await response.json();
-
-  const tmdbEpisode =
-    (data.episodes || []).find(
-      ep =>
-        ep.episode_number === episode
-    );
-
-  if (!tmdbEpisode) {
-    return {
-      title: show.title,
-      available: false,
-      reason: "Episode not found on TMDB"
-    };
-  }
-
-  const released =
-    tmdbEpisode.air_date &&
-    new Date(tmdbEpisode.air_date) <= new Date();
-
-  if (!released) {
-    return {
-      title: show.title,
-      available: false,
-      episode:
-        `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`
-    };
-  }
-
-  const existing =
-    db.prepare(`
-      SELECT *
-      FROM simkl_episode_notifications
-      WHERE simkl_id = ?
-        AND season = ?
-        AND episode = ?
-    `).get(
-      simklId,
-      season,
-      episode
-    );
-
-  if (existing) {
-    return {
-      title: show.title,
-      available: true,
-      already_notified: true,
-      episode:
-        `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`
-    };
-  }
-
-  const episodeCode =
-    `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`;
-
-  const message =
-    `🔔 New Episode Available\n\n` +
-    `${show.title}\n` +
-    `${episodeCode} — ${tmdbEpisode.name}\n\n` +
-    `Release date: ${tmdbEpisode.air_date}`;
-
-  await sendTelegramNotification(
-    message
-  );
-
-  db.prepare(`
-    INSERT INTO simkl_episode_notifications (
-      simkl_id,
-      tmdb_id,
-      season,
-      episode,
-      title
-    )
-    VALUES (?, ?, ?, ?, ?)
-  `).run(
-    simklId,
-    Number(tmdbId),
-    season,
-    episode,
-    show.title
-  );
-
-  return {
-    title: show.title,
-    available: true,
-    notified: true,
-    episode: episodeCode,
-    name: tmdbEpisode.name,
-    air_date: tmdbEpisode.air_date
-  };
-}
-
-app.get(
-  "/simkl/test-reacher-episode",
-  async (req, res) => {
-
-    try {
-
-      const data =
-        await getSimklItems(
-          "tv",
-          "plantowatch"
-        );
-
-      const shows =
-        data.shows || [];
-
-      const reacher =
-        shows.find(
-          item =>
-            item.show?.ids?.tmdb === "108978" ||
-            Number(item.show?.ids?.tmdb) === 108978
-        );
-
-      if (!reacher) {
-        return res.status(404).json({
-          error:
-            "Reacher was not found in your Simkl Watchlist"
-        });
-      }
-
-      const result =
-        await checkSimklShowEpisode(
-          reacher
-        );
-
-      res.json({
-        success: true,
-        result
-      });
-
-    } catch (error) {
-
-      console.error(
-        "Reacher episode test error:",
-        error
-      );
-
-      res.status(500).json({
-        error: error.message
-      });
-    }
-  }
-);
-
-async function checkSimklShowWatchlist() {
-
-  const data =
-    await getSimklItems(
-      "tv",
-      "plantowatch"
-    );
+async function getPopularShows() {
 
   const shows =
-    data.shows || [];
+    new Map();
 
-  console.log(
-    `Checking ${shows.length} Simkl show(s)...`
-  );
+  /*
+   * Popular TV shows.
+   */
+
+  for (
+    let page = 1;
+    page <= TV_PAGES;
+    page++
+  ) {
+
+    const data =
+      await tmdb(
+        `/tv/popular?page=${page}`
+      );
+
+    for (
+      const show of data.results || []
+    ) {
+
+      if (show.id) {
+
+        shows.set(
+          show.id,
+          show
+        );
+      }
+    }
+  }
+
+  /*
+   * Weekly trending TV shows.
+   */
+
+  const trending =
+    await tmdb(
+      "/trending/tv/week"
+    );
+
+  for (
+    const show of trending.results || []
+  ) {
+
+    if (show.id) {
+
+      shows.set(
+        show.id,
+        show
+      );
+    }
+  }
+
+  return Array.from(
+    shows.values()
+  )
+    .sort(
+      (a, b) =>
+        (b.popularity || 0) -
+        (a.popularity || 0)
+    )
+    .slice(
+      0,
+      MAX_SHOWS
+    );
+}
+
+/* =========================================================
+   CHECK POPULAR TV SHOW EPISODES
+========================================================= */
+
+async function checkPopularShows() {
+
+  const shows =
+    await getPopularShows();
 
   let checked = 0;
   let available = 0;
   let notified = 0;
-  let skipped = 0;
+  let alreadyNotified = 0;
+  let errors = 0;
 
-  for (const item of shows) {
+  const cutoff =
+    new Date();
+
+  cutoff.setDate(
+    cutoff.getDate() -
+    EPISODE_LOOKBACK_DAYS
+  );
+
+  console.log(
+    `Checking ${shows.length} popular/trending TV show(s)...`
+  );
+
+  for (
+    const show of shows
+  ) {
 
     try {
-
-      if (!item.show) {
-        skipped++;
-        continue;
-      }
 
       checked++;
 
-      const result =
-        await checkSimklShowEpisode(
-          item
+      /*
+       * Get full show details so we can identify
+       * the latest season.
+       */
+
+      const details =
+        await tmdb(
+          `/tv/${show.id}`
         );
 
-      if (result.available) {
-        available++;
+      const seasons =
+        (details.seasons || [])
+          .filter(
+            season =>
+              season.season_number >= 0
+          );
+
+      if (
+        !seasons.length
+      ) {
+        continue;
       }
 
-      if (result.notified) {
-        notified++;
-      }
-
-      console.log(
-        `${item.show.title}:`,
-        result
-      );
-
-    } catch (error) {
-
-      skipped++;
-
-      console.error(
-        `Failed checking ${item.show?.title || "unknown show"}:`,
-        error.message
-      );
-    }
-  }
-
-  return {
-    total: shows.length,
-    checked,
-    available,
-    notified,
-    skipped
-  };
-}
-
-app.get(
-  "/simkl/check-shows",
-  async (req, res) => {
-
-    try {
-
-      const result =
-        await checkSimklShowWatchlist();
-
-      res.json({
-        success: true,
-        ...result
-      });
-
-    } catch (error) {
-
-      console.error(
-        "Simkl show check error:",
-        error
-      );
-
-      res.status(500).json({
-        error: error.message
-      });
-    }
-  }
-);
-
-/* =========================================================
-   CHECK WATCHLIST
-========================================================= */
-
-async function checkWatchlist() {
-
-  const movies = db.prepare(`
-    SELECT *
-    FROM watchlist
-    WHERE digital_available = 0
-  `).all();
-
-  console.log(
-    `Checking ${movies.length} watchlist item(s)...`
-  );
-
-  for (const movie of movies) {
-
-    try {
-
-      const result =
-        await checkDigitalRelease(
-          movie.tmdb_id
+      const latestSeason =
+        seasons.reduce(
+          (latest, season) =>
+            season.season_number >
+            latest.season_number
+              ? season
+              : latest
         );
 
-      if (result.available) {
+      const seasonNumber =
+        latestSeason.season_number;
+
+      const seasonData =
+        await tmdb(
+          `/tv/${show.id}/season/${seasonNumber}`
+        );
+
+      const episodes =
+        seasonData.episodes || [];
+
+      /*
+       * Only consider episodes released within
+       * the last 7 days.
+       */
+
+      const newEpisodes =
+        episodes.filter(
+          episode => {
+
+            if (
+              !episode.air_date
+            ) {
+              return false;
+            }
+
+            const airDate =
+              new Date(
+                episode.air_date
+              );
+
+            return (
+              airDate <= new Date() &&
+              airDate >= cutoff
+            );
+          }
+        );
+
+      if (
+        !newEpisodes.length
+      ) {
+        continue;
+      }
+
+      available +=
+        newEpisodes.length;
+
+      /*
+       * Notify every new episode once.
+       */
+
+      for (
+        const episode
+          of newEpisodes
+      ) {
+
+        const existing =
+          db.prepare(`
+            SELECT id
+            FROM popular_episode_notifications
+            WHERE tmdb_id = ?
+              AND season = ?
+              AND episode = ?
+          `).get(
+            show.id,
+            seasonNumber,
+            episode.episode_number
+          );
+
+        if (existing) {
+
+          alreadyNotified++;
+
+          continue;
+        }
+
+        const episodeCode =
+          `S${String(
+            seasonNumber
+          ).padStart(2, "0")}` +
+          `E${String(
+            episode.episode_number
+          ).padStart(2, "0")}`;
 
         const message =
-          `🔔 Digital Release Available\n\n` +
-          `${movie.title}\n\n` +
-          `Digital release detected by TMDB.` +
-          (
-            result.country
-              ? `\nCountry: ${result.country}`
-              : ""
-          ) +
-          (
-            result.release_date
-              ? `\nRelease date: ${result.release_date}`
-              : ""
-          );
+          `📺 New Episode Available\n\n` +
+          `${show.name}\n` +
+          `${episodeCode} — ${episode.name}` +
+          `\n\n` +
+          `Release date: ${episode.air_date}`;
 
         await sendTelegramNotification(
           message
         );
 
         db.prepare(`
-          UPDATE watchlist
-          SET
-            digital_available = 1,
-            notified = 1
-          WHERE tmdb_id = ?
-        `).run(movie.tmdb_id);
-
-        console.log(
-          `Digital release found and notification sent: ${movie.title}`
+          INSERT INTO popular_episode_notifications (
+            tmdb_id,
+            season,
+            episode,
+            title,
+            air_date
+          )
+          VALUES (?, ?, ?, ?, ?)
+        `).run(
+          show.id,
+          seasonNumber,
+          episode.episode_number,
+          show.name,
+          episode.air_date
         );
 
-      } else {
+        notified++;
 
         console.log(
-          `No digital release yet: ${movie.title}`
+          `NOTIFIED episode: ${show.name} ${episodeCode}`
         );
       }
 
     } catch (error) {
 
+      errors++;
+
       console.error(
-        `Failed checking ${movie.title}:`,
+        `TV check failed for ${show.name}:`,
         error.message
       );
     }
   }
+
+  return {
+    total:
+      shows.length,
+
+    checked,
+
+    available,
+
+    notified,
+
+    already_notified:
+      alreadyNotified,
+
+    errors
+  };
 }
 
-app.post(
-  "/check-watchlist",
-  async (req, res) => {
-
-    try {
-
-      await checkWatchlist();
-
-      res.json({
-        success: true,
-        message:
-          "Watchlist check completed"
-      });
-
-    } catch (error) {
-
-      console.error(error);
-
-      res.status(500).json({
-        error:
-          "Watchlist check failed"
-      });
-    }
-  }
-);
-
 /* =========================================================
-   SIMKL WATCHLIST
+   RUN EVERYTHING
 ========================================================= */
 
-async function getSimklItems(type, status) {
-
-  const account = db.prepare(`
-    SELECT access_token
-    FROM simkl_accounts
-    ORDER BY id DESC
-    LIMIT 1
-  `).get();
-
-  if (!account) {
-    throw new Error(
-      "No Simkl account connected"
-    );
-  }
-
-  const response = await fetch(
-    `https://api.simkl.com/sync/all-items/${type}/${status}`,
-    {
-      method: "GET",
-
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization":
-          `Bearer ${account.access_token}`,
-        "simkl-api-key":
-          SIMKL_CLIENT_ID
-      }
-    }
-  );
-
-  const data =
-    await response.json();
-
-  if (!response.ok) {
-    console.error(
-      `Simkl ${type}/${status} error:`,
-      data
-    );
-
-    throw new Error(
-      `Simkl API request failed: ${response.status}`
-    );
-  }
-
-  return data;
-}
-
-
-/* =========================================================
-   MOVIE WATCHLIST
-========================================================= */
-
-app.get(
-  "/simkl/watchlist/movies",
-  async (req, res) => {
-
-    try {
-
-      const data =
-        await getSimklItems(
-          "movies",
-          "plantowatch"
-        );
-
-      const movies =
-        data.movies || [];
-
-      res.json({
-        success: true,
-        count: movies.length,
-        items: movies
-      });
-
-    } catch (error) {
-
-      console.error(error);
-
-      res.status(500).json({
-        error:
-          error.message
-      });
-    }
-  }
-);
-
-
-/* =========================================================
-   TV WATCHLIST
-========================================================= */
-
-app.get(
-  "/simkl/watchlist/shows",
-  async (req, res) => {
-
-    try {
-
-      const data =
-        await getSimklItems(
-          "tv",
-          "plantowatch"
-        );
-
-      const shows =
-  data.shows || [];
-
-      res.json({
-        success: true,
-        count: shows.length,
-        items: shows
-      });
-
-    } catch (error) {
-
-      console.error(error);
-
-      res.status(500).json({
-        error:
-          error.message
-      });
-    }
-  }
-);
-
-app.get(
-  "/simkl/test-show-release",
-  async (req, res) => {
-
-    try {
-
-      const tmdbId = 108978;
-      const seasonNumber = 4;
-      const title = "Reacher";
-
-      const url =
-        `https://api.themoviedb.org/3/tv/${tmdbId}/season/${seasonNumber}?api_key=${TMDB_API_KEY}`;
-
-      const response =
-        await fetch(url);
-
-      if (!response.ok) {
-        throw new Error(
-          `TMDB request failed: ${response.status}`
-        );
-      }
-
-      const data =
-        await response.json();
-
-      const episodes =
-        data.episodes || [];
-
-      const releasedEpisodes =
-        episodes.filter(
-          episode =>
-            episode.air_date &&
-            new Date(episode.air_date) <= new Date()
-        );
-
-      res.json({
-        success: true,
-        title,
-        tmdb_id: tmdbId,
-        season: seasonNumber,
-        total_episodes: episodes.length,
-        released_episodes: releasedEpisodes.length,
-        episodes: releasedEpisodes.map(
-          episode => ({
-            episode: episode.episode_number,
-            name: episode.name,
-            air_date: episode.air_date
-          })
-        )
-      });
-
-    } catch (error) {
-
-      console.error(
-        "Show release test error:",
-        error
-      );
-
-      res.status(500).json({
-        error: error.message
-      });
-    }
-  }
-);
-
-/* =========================================================
-   SIMKL OAUTH
-========================================================= */
-
-app.get("/auth/simkl", (req, res) => {
-
-  const redirectUri =
-    "https://digital-release-notifier-production.up.railway.app/auth/simkl/callback";
-
-  const authUrl =
-    "https://simkl.com/oauth/authorize" +
-    `?response_type=code` +
-    `&client_id=${encodeURIComponent(SIMKL_CLIENT_ID)}` +
-    `&redirect_uri=${encodeURIComponent(redirectUri)}`;
-
-  res.redirect(authUrl);
-});
-
-app.get(
-  "/auth/simkl/callback",
-  async (req, res) => {
-
-    const { code } = req.query;
-
-    if (!code) {
-      return res.status(400).send(
-        "Simkl authorization code missing."
-      );
-    }
-
-    try {
-
-      const response = await fetch(
-        "https://api.simkl.com/oauth/token",
-        {
-          method: "POST",
-
-          headers: {
-            "Content-Type": "application/json"
-          },
-
-          body: JSON.stringify({
-            code,
-            client_id: SIMKL_CLIENT_ID,
-            client_secret: SIMKL_CLIENT_SECRET,
-            redirect_uri:
-              "https://digital-release-notifier-production.up.railway.app/auth/simkl/callback",
-            grant_type:
-              "authorization_code"
-          })
-        }
-      );
-
-      const data =
-        await response.json();
-
-      if (!response.ok) {
-
-        console.error(
-          "Simkl token error:",
-          data
-        );
-
-        return res.status(500).send(
-          "Failed to connect Simkl account."
-        );
-      }
-
-      /* =====================================================
-         SAVE SIMKL ACCESS TOKEN
-      ===================================================== */
-
-      if (!data.access_token) {
-
-        return res.status(500).send(
-          "Simkl did not provide an access token."
-        );
-      }
-
-      /*
-       * For now we keep one connected Simkl account.
-       * Later, when we make this multi-user,
-       * this table will store one account per user.
-       */
-
-      db.prepare(`
-        DELETE FROM simkl_accounts
-      `).run();
-
-      db.prepare(`
-        INSERT INTO simkl_accounts (
-          access_token
-        )
-        VALUES (?)
-      `).run(
-        data.access_token
-      );
-
-      res.send(`
-        <h2>Simkl account connected successfully! ✅</h2>
-        <p>Your Simkl connection has been saved.</p>
-      `);
-
-    } catch (error) {
-
-      console.error(error);
-
-      res.status(500).send(
-        "Simkl connection failed."
-      );
-    }
-  }
-);
-
-/* =========================================================
-   HEALTH CHECK
-========================================================= */
-
-app.get("/", (req, res) => {
-
-  res.json({
-    status: "ok",
-    service: "watchlist-notifier",
-    version: "0.1.0"
-  });
-
-});
-
-/* =========================================================
-   ADD TO WATCHLIST
-========================================================= */
-
-app.post("/watchlist", (req, res) => {
-
-  const {
-    tmdb_id,
-    title,
-    poster
-  } = req.body;
-
-  if (!tmdb_id || !title) {
-
-    return res.status(400).json({
-      error:
-        "tmdb_id and title are required"
-    });
-  }
-
-  try {
-
-    const stmt = db.prepare(`
-      INSERT INTO watchlist (
-        tmdb_id,
-        title,
-        poster
-      )
-      VALUES (?, ?, ?)
-    `);
-
-    const result = stmt.run(
-      tmdb_id,
-      title,
-      poster || null
-    );
-
-    res.status(201).json({
-      success: true,
-      id: result.lastInsertRowid,
-      tmdb_id,
-      title,
-      poster: poster || null
-    });
-
-  } catch (error) {
-
-    if (
-      error.code ===
-      "SQLITE_CONSTRAINT_UNIQUE"
-    ) {
-
-      return res.status(409).json({
-        error:
-          "Movie already exists in watchlist"
-      });
-    }
-
-    console.error(error);
-
-    res.status(500).json({
-      error:
-        "Failed to add movie"
-    });
-  }
-});
-
-/* =========================================================
-   GET WATCHLIST
-========================================================= */
-
-app.get("/watchlist", (req, res) => {
-
-  const rows = db.prepare(`
-    SELECT *
-    FROM watchlist
-    ORDER BY added_at DESC
-  `).all();
-
-  res.json({
-    count: rows.length,
-    items: rows
-  });
-
-});
-
-/* =========================================================
-   REMOVE FROM WATCHLIST
-========================================================= */
-
-app.delete(
-  "/watchlist/:tmdbId",
-  (req, res) => {
-
-    const tmdbId =
-      Number(req.params.tmdbId);
-
-    if (!Number.isInteger(tmdbId)) {
-
-      return res.status(400).json({
-        error:
-          "Invalid TMDB ID"
-      });
-    }
-
-    const result = db.prepare(`
-      DELETE FROM watchlist
-      WHERE tmdb_id = ?
-    `).run(tmdbId);
-
-    if (result.changes === 0) {
-
-      return res.status(404).json({
-        error:
-          "Movie not found in watchlist"
-      });
-    }
-
-    res.json({
-      success: true,
-      tmdb_id: tmdbId
-    });
-
-  }
-);
-
-/* =========================================================
-   RUN ALL SIMKL CHECKS
-========================================================= */
-
-let checkInProgress = false;
+let checkInProgress =
+  false;
 
 let lastCheck = {
-  started_at: null,
-  finished_at: null,
-  movies: null,
-  shows: null,
-  error: null
+  started_at:
+    null,
+
+  finished_at:
+    null,
+
+  movies:
+    null,
+
+  shows:
+    null,
+
+  error:
+    null
 };
 
-async function runAllSimklChecks() {
+async function runAllChecks() {
 
-  if (checkInProgress) {
+  if (
+    checkInProgress
+  ) {
 
     console.log(
-      "A Simkl check is already running. Skipping this run."
+      "A check is already running. Skipping."
     );
 
     return {
-      success: false,
-      skipped: true,
-      reason: "check_in_progress"
+      success:
+        false,
+
+      skipped:
+        true,
+
+      reason:
+        "check_in_progress"
     };
   }
 
-  checkInProgress = true;
+  checkInProgress =
+    true;
 
   lastCheck = {
-    started_at: new Date().toISOString(),
-    finished_at: null,
-    movies: null,
-    shows: null,
-    error: null
+    started_at:
+      new Date().toISOString(),
+
+    finished_at:
+      null,
+
+    movies:
+      null,
+
+    shows:
+      null,
+
+    error:
+      null
   };
 
   try {
@@ -1311,62 +848,45 @@ async function runAllSimklChecks() {
     );
 
     console.log(
-      "Running automatic Simkl checks..."
+      "RUNNING POPULAR RELEASE CHECK"
     );
 
     console.log(
       "========================================"
     );
 
-    /* =====================================================
-       MOVIES
-    ===================================================== */
-
-    console.log(
-      "Running Simkl movie check..."
-    );
-
-    const movieResult =
-      await checkSimklMovieWatchlist();
+    const movies =
+      await checkPopularMovies();
 
     lastCheck.movies =
-      movieResult;
+      movies;
 
     console.log(
-      "Automatic movie check completed:",
-      movieResult
+      "Movie check completed:",
+      movies
     );
 
-    /* =====================================================
-       TV SHOWS
-    ===================================================== */
-
-    console.log(
-      "Running Simkl TV show check..."
-    );
-
-    const showResult =
-      await checkSimklShowWatchlist();
+    const shows =
+      await checkPopularShows();
 
     lastCheck.shows =
-      showResult;
+      shows;
 
     console.log(
-      "Automatic TV show check completed:",
-      showResult
+      "TV check completed:",
+      shows
     );
 
     lastCheck.finished_at =
       new Date().toISOString();
 
-    console.log(
-      "All Simkl checks completed."
-    );
-
     return {
-      success: true,
-      movies: movieResult,
-      shows: showResult
+      success:
+        true,
+
+      movies,
+
+      shows
     };
 
   } catch (error) {
@@ -1378,58 +898,301 @@ async function runAllSimklChecks() {
       new Date().toISOString();
 
     console.error(
-      "Automatic Simkl check failed:",
+      "Release check failed:",
       error
     );
 
     return {
-      success: false,
-      error: error.message,
-      movies: lastCheck.movies,
-      shows: lastCheck.shows
+      success:
+        false,
+
+      error:
+        error.message,
+
+      movies:
+        lastCheck.movies,
+
+      shows:
+        lastCheck.shows
     };
 
   } finally {
 
-    checkInProgress = false;
+    checkInProgress =
+      false;
   }
 }
 
-
 /* =========================================================
-   MANUAL FULL CHECK
+   MANUAL CHECK
 ========================================================= */
 
 app.get(
-  "/simkl/run-all",
+  "/run-all",
   async (req, res) => {
 
     const result =
-      await runAllSimklChecks();
+      await runAllChecks();
 
-    res.json(result);
+    res.json(
+      result
+    );
   }
 );
 
-
 /* =========================================================
-   CHECK STATUS
+   STATUS
 ========================================================= */
 
 app.get(
-  "/simkl/status",
+  "/status",
   (req, res) => {
 
     res.json({
-      success: true,
+      success:
+        true,
+
       check_in_progress:
         checkInProgress,
+
       last_check:
         lastCheck
     });
   }
 );
 
+/* =========================================================
+   TEST MOVIE
+========================================================= */
+
+app.get(
+  "/test-movie/:tmdbId",
+  async (req, res) => {
+
+    const tmdbId =
+      Number(
+        req.params.tmdbId
+      );
+
+    if (
+      !Number.isInteger(
+        tmdbId
+      )
+    ) {
+
+      return res.status(400).json({
+        error:
+          "Invalid TMDB ID"
+      });
+    }
+
+    try {
+
+      const movie =
+        await tmdb(
+          `/movie/${tmdbId}`
+        );
+
+      const release =
+        await getDigitalRelease(
+          tmdbId
+        );
+
+      res.json({
+        success:
+          true,
+
+        movie: {
+          tmdb_id:
+            movie.id,
+
+          title:
+            movie.title,
+
+          release_date:
+            movie.release_date
+        },
+
+        digital_release:
+          release
+      });
+
+    } catch (error) {
+
+      console.error(
+        error
+      );
+
+      res.status(500).json({
+        success:
+          false,
+
+        error:
+          error.message
+      });
+    }
+  }
+);
+
+/* =========================================================
+   TEST TV SHOW
+========================================================= */
+
+app.get(
+  "/test-show/:tmdbId",
+  async (req, res) => {
+
+    const tmdbId =
+      Number(
+        req.params.tmdbId
+      );
+
+    if (
+      !Number.isInteger(
+        tmdbId
+      )
+    ) {
+
+      return res.status(400).json({
+        error:
+          "Invalid TMDB ID"
+      });
+    }
+
+    try {
+
+      const details =
+        await tmdb(
+          `/tv/${tmdbId}`
+        );
+
+      const seasons =
+        (details.seasons || [])
+          .filter(
+            season =>
+              season.season_number >= 0
+          );
+
+      if (
+        !seasons.length
+      ) {
+
+        return res.json({
+          success:
+            true,
+
+          title:
+            details.name,
+
+          episodes:
+            []
+        });
+      }
+
+      const latestSeason =
+        seasons.reduce(
+          (latest, season) =>
+            season.season_number >
+            latest.season_number
+              ? season
+              : latest
+        );
+
+      const seasonData =
+        await tmdb(
+          `/tv/${tmdbId}/season/${latestSeason.season_number}`
+        );
+
+      const cutoff =
+        new Date();
+
+      cutoff.setDate(
+        cutoff.getDate() -
+        EPISODE_LOOKBACK_DAYS
+      );
+
+      const episodes =
+        (seasonData.episodes || [])
+          .filter(
+            episode =>
+              episode.air_date &&
+              new Date(
+                episode.air_date
+              ) <= new Date() &&
+              new Date(
+                episode.air_date
+              ) >= cutoff
+          )
+          .map(
+            episode => ({
+              episode:
+                episode.episode_number,
+
+              name:
+                episode.name,
+
+              air_date:
+                episode.air_date
+            })
+          );
+
+      res.json({
+        success:
+          true,
+
+        title:
+          details.name,
+
+        tmdb_id:
+          tmdbId,
+
+        season:
+          latestSeason.season_number,
+
+        recent_released_episodes:
+          episodes
+      });
+
+    } catch (error) {
+
+      console.error(
+        error
+      );
+
+      res.status(500).json({
+        success:
+          false,
+
+        error:
+          error.message
+      });
+    }
+  }
+);
+
+/* =========================================================
+   HEALTH CHECK
+========================================================= */
+
+app.get(
+  "/",
+  (req, res) => {
+
+    res.json({
+      status:
+        "ok",
+
+      service:
+        "movie-series-release-notifier",
+
+      version:
+        "2.0.0",
+
+      monitoring:
+        "TMDB popular and trending"
+    });
+  }
+);
 
 /* =========================================================
    AUTOMATIC 6-HOUR CHECK
@@ -1438,39 +1201,38 @@ app.get(
 setInterval(
   async () => {
 
-    await runAllSimklChecks();
+    await runAllChecks();
 
   },
-  6 * 60 * 60 * 1000
+  CHECK_INTERVAL
 );
 
 /* =========================================================
    START SERVER
 ========================================================= */
 
-app.listen(PORT, () => {
+app.listen(
+  PORT,
+  () => {
 
-  console.log(
-    `Watchlist notifier running on port ${PORT}`
-  );
+    console.log(
+      `Movie & Series Release Notifier running on port ${PORT}`
+    );
 
-  /*
-   * Run one check shortly after startup.
-   * This prevents waiting up to 6 hours after
-   * a Railway restart before the first check.
-   */
+    /*
+     * Run one check shortly after startup.
+     */
+    setTimeout(
+      async () => {
 
-  setTimeout(
-    async () => {
+        console.log(
+          "Running initial release check..."
+        );
 
-      console.log(
-        "Running initial Simkl check after startup..."
-      );
+        await runAllChecks();
 
-      await runAllSimklChecks();
-
-    },
-    15000
-  );
-
-});
+      },
+      STARTUP_DELAY
+    );
+  }
+);
