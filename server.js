@@ -59,6 +59,8 @@ const MAX_SHOWS = 250;
  * 10764 Reality
  * 10766 Soap
  * 10767 Talk
+ * 10751 Family
+35 Comedy
  *
  * We exclude Animation as well because the notifier
  * is intended to avoid anime/animated catalogs.
@@ -70,7 +72,9 @@ const EXCLUDED_TV_GENRES = new Set([
   10763,
   10764,
   10766,
-  10767
+  10767,
+  35,
+  10751
 ]);
 
 
