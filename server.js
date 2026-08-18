@@ -20,7 +20,7 @@ app.use(express.json());
 ========================================================= */
 
 const CHECK_INTERVAL =
-  6 * 60 * 60 * 1000;
+  60 * 60 * 1000;
 
 const STARTUP_DELAY =
   15 * 1000;
@@ -36,14 +36,14 @@ const EPISODE_LOOKBACK_DAYS = 7;
  * Number of TMDB pages to scan.
  * 20 results per page.
  */
-const MOVIE_PAGES = 2;
-const TV_PAGES = 2;
+const MOVIE_PAGES = 10;
+const TV_PAGES = 10;
 
 /*
  * Maximum unique movies/shows to inspect.
  */
-const MAX_MOVIES = 30;
-const MAX_SHOWS = 30;
+const MAX_MOVIES = 250;
+const MAX_SHOWS = 250;
 
 
 /* =========================================================
