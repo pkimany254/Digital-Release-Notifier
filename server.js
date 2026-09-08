@@ -43,7 +43,7 @@ const SETTINGS = {
    * 24 = once per day
    */
 
-  checkIntervalHours: 6,
+  checkIntervalHours: 2,
 
 
   /*
