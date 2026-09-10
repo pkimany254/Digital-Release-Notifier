@@ -71,11 +71,17 @@ const MOVIE_FILTERS = {
 // ============================================================
 
 const TV_FILTERS = {
+  // NEW SERIES
+  newSeriesMinPopularity: 2,
+
+  // NEW SEASON
+  newSeasonMinPopularity: 15,
+
+  // NEW EPISODE
+  newEpisodeMinPopularity: 20,
+
   // Look for episodes/seasons released within this period
   episodeLookbackDays: 1,
-
-  // Minimum TMDB popularity
-  minPopularity: 10,
 
   // Original language(s)
   originalLanguages: ["en"],
