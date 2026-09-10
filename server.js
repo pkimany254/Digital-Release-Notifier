@@ -63,7 +63,7 @@ const MOVIE_FILTERS = {
   includeAdult: false,
 
   // Number of TMDB discover pages
-  maxPages: 10
+  maxPages: 50
 };
 
 // ============================================================
@@ -114,7 +114,7 @@ const TV_FILTERS = {
   includeAdult: false,
 
   // Number of TMDB discover pages
-  maxPages: 10,
+  maxPages: 50,
 
   // Number of latest seasons inspected
   seasonsToInspect: 2
