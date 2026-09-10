@@ -22,7 +22,7 @@ const Database = require("better-sqlite3");
 
 const SETTINGS = {
   // Automatic check interval
-  checkIntervalHours: 6,
+  checkIntervalHours: 2,
 
   // Wait after Railway/server startup before first check
   startupDelaySeconds: 15,
