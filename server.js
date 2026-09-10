@@ -770,7 +770,11 @@ async function processTVShow(
 
     // Season 1 = NEW SERIES
     if (seasonNumber === 1) {
-      if (!seriesAlreadyNotified(show.id)) {
+      if (
+        (show.popularity || 0) >=
+        TV_FILTERS.newSeriesMinPopularity && 
+          !seriesAlreadyNotified(show.id)
+          ) {
         const text =
           `📺 <b>NEW SERIES</b>\n\n` +
           `<b>${details.name}</b>\n\n` +
@@ -803,6 +807,8 @@ async function processTVShow(
     // Season 2+ = NEW SEASON
     else {
       if (
+        (show.popularity || 0) >=
+        TV_FILTERS.newSeasonMinPopularity &&
         !seasonAlreadyNotified(
           show.id,
           seasonNumber
@@ -888,6 +894,13 @@ async function processTVShow(
       const episodeNumber =
         episode.episode_number;
 
+if (
+  (show.popularity || 0) <
+  TV_FILTERS.newEpisodeMinPopularity
+  ) {
+  continue;
+}
+      
       if (
         episodeAlreadyNotified(
           show.id,
