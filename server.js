@@ -111,7 +111,7 @@ const TV_FILTERS = {
   maxPages: 10,
 
   // Number of latest seasons inspected
-  seasonsToInspect: 5
+  seasonsToInspect: 2
 };
 
 // ============================================================
