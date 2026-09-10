@@ -44,7 +44,7 @@ const MOVIE_FILTERS = {
   lookbackDays: 7,
 
   // Minimum TMDB popularity
-  minPopularity: 10,
+  minPopularity: 2,
 
   // Original language(s)
   originalLanguages: ["en"],
@@ -72,7 +72,7 @@ const MOVIE_FILTERS = {
 
 const TV_FILTERS = {
   // Look for episodes/seasons released within this period
-  episodeLookbackDays: 7,
+  episodeLookbackDays: 1,
 
   // Minimum TMDB popularity
   minPopularity: 10,
