@@ -57,15 +57,15 @@ const SEASON_RENEWAL_LOOKBACK_DAYS = 14;
  *
  * Set to 0 to disable popularity filtering entirely.
  */
-const MIN_MOVIE_POPULARITY = 20;
-const MIN_TV_EPISODE_POPULARITY = 20;
+const MIN_MOVIE_POPULARITY = 3;
+const MIN_TV_EPISODE_POPULARITY = 3;
 
 /*
  * Renewals are specifically meant to surface *popular*
  * series that got a new season, so this threshold is
  * intentionally higher than the plain episode one.
  */
-const MIN_TV_RENEWAL_POPULARITY = 40;
+const MIN_TV_RENEWAL_POPULARITY = 20;
 
 /*
  * Safety caps on how many discover pages we'll ever page
