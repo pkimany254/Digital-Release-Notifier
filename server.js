@@ -39,14 +39,14 @@ const STARTUP_DELAY =
  * within this many days.
  */
 const RELEASE_LOOKBACK_DAYS = 7;
-const EPISODE_LOOKBACK_DAYS = 7;
+const EPISODE_LOOKBACK_DAYS = 1;
 
 /*
  * Number of TMDB pages to scan.
  * 20 results per page.
  */
-const MOVIE_PAGES = 10;
-const TV_PAGES = 10;
+const MOVIE_PAGES = 50;
+const TV_PAGES = 50;
 
 /*
  * Maximum unique movies/shows to inspect.
